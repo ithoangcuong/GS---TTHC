@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "Giám sát hồ sơ TTHC — Collector",
+  "version": "0.3.0",
+  "description": "Collector thủ công, xác nhận đăng nhập và cấu hình nguồn trước khi đọc hồ sơ.",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://motcua.tphcm.gov.vn/*",
+    "https://motcua.mst.gov.vn/*",
+    "https://motcua.moha.gov.vn/*",
+    "https://motcuabxd.moc.gov.vn/*",
+    "https://motcua.moc.gov.vn/*",
+    "https://tthc.moit.gov.vn/*",
+    "https://dvcnnmt.mae.gov.vn/*",
+    "https://dvc.moh.gov.vn/*",
+    "https://baocaodvc.moet.gov.vn/*",
+    "https://motcua.moj.gov.vn/*",
+    "https://dichvucong.bvhttdl.gov.vn/*",
+    "https://gqtthc.bdttg.gov.vn/*",
+    "https://script.google.com/macros/s/*",
+    "https://script.googleusercontent.com/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.mjs",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Collector hồ sơ",
+    "default_popup": "popup/index.html"
+  },
+  "options_page": "options/index.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://motcua.tphcm.gov.vn/*",
+        "https://motcua.mst.gov.vn/*",
+        "https://motcua.moha.gov.vn/*",
+        "https://motcuabxd.moc.gov.vn/*",
+        "https://motcua.moc.gov.vn/*",
+        "https://tthc.moit.gov.vn/*",
+        "https://dvcnnmt.mae.gov.vn/*",
+        "https://dvc.moh.gov.vn/*",
+        "https://baocaodvc.moet.gov.vn/*",
+        "https://motcua.moj.gov.vn/*",
+        "https://dichvucong.bvhttdl.gov.vn/*",
+        "https://gqtthc.bdttg.gov.vn/*"
+      ],
+      "js": [
+        "content/collector.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false,
+      "world": "ISOLATED"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; connect-src https://script.google.com https://script.googleusercontent.com;"
+  }
+}

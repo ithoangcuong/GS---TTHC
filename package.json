@@ -1,0 +1,43 @@
+{
+  "name": "gs-tthc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/main.mjs",
+    "dev": "node --env-file-if-exists=.env --watch server/main.mjs",
+    "setup": "node --env-file-if-exists=.env server/cli.mjs setup",
+    "setup:google": "node --env-file-if-exists=.env server/cli.mjs setup-google",
+    "migrate": "node --env-file-if-exists=.env server/cli.mjs migrate",
+    "demo": "node --env-file-if-exists=.env server/cli.mjs demo",
+    "backup": "node --env-file-if-exists=.env server/cli.mjs backup",
+    "lint": "node scripts/check.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
+    "test:browser": "node scripts/browser-smoke.mjs",
+    "test:browser:google": "node scripts/google-browser-smoke.mjs",
+    "test:browser:gas": "node scripts/apps-script-browser-smoke.mjs",
+    "test:login:live": "node scripts/check-live-admin-login.mjs",
+    "test:browser:extension": "node tests/extension-browser-smoke.mjs",
+    "extension:build": "node extension/build.mjs",
+    "crypto:build": "node scripts/build-crypto-vendor.mjs",
+    "gas:check": "node scripts/check-apps-script.mjs",
+    "gas:status": "clasp show-file-status",
+    "gas:push": "node scripts/push-apps-script.mjs",
+    "benchmark": "node scripts/benchmark.mjs",
+    "build": "node scripts/build.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@google/clasp": "3.4.1",
+    "@noble/ciphers": "2.4.0",
+    "@noble/hashes": "2.0.1",
+    "@types/node": "^24.0.0",
+    "esbuild": "0.28.2",
+    "playwright-core": "^1.63.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cấu hình nguồn</title><link rel="stylesheet" href="../ui.css"></head>
+<body class="options"><h1>Cấu hình adapter</h1><p>Cả 11 adapter đang chờ mẫu DOM/API thực tế. Chỉ nhập cấu hình sau khi đã kiểm chứng URL danh sách, TABLE, mapping và dấu hiệu đăng nhập trên phiên được phép.</p>
+<p>Người tích hợp kiểm tra HTML trong phiên được phép, chọn selector cho TABLE và dấu hiệu đăng nhập độc lập, rồi nhập JSON cấu hình. Không đưa password, cookie, session, OTP hoặc token portal vào cấu hình.</p>
+<form id="adapter"><label>Nhập file JSON<input id="file" type="file" accept=".json,application/json"></label><label>Cấu hình JSON<textarea id="config" rows="20" spellcheck="false" required></textarea></label><button type="submit">Lưu cấu hình đã kiểm chứng</button></form><p id="status" role="status"></p>
+<details><summary>Các trường cần có</summary><pre>{
+  "sourceSystem": "TPHCM",
+  "verified": true,
+  "evidence": { "reference": "Mô tả mẫu DOM đã kiểm chứng, không có credentials", "verifiedAt": "timestamp ISO có múi giờ" },
+  "listUrl": "URL HTTPS danh sách thực tế, không có query/hash",
+  "loggedInSelector": "selector dấu hiệu đăng nhập độc lập đã kiểm chứng",
+  "loggedOutSelector": "selector dấu hiệu đăng xuất nếu có",
+  "tableSelector": "selector TABLE hồ sơ đã kiểm chứng",
+  "headerSelector": "selector header bên trong TABLE",
+  "rowSelector": "selector các dòng dữ liệu bên trong TABLE",
+  "cellSelector": "selector các ô bên trong dòng",
+  "headerMappings": { "nhãn header thực tế": "caseCode" }
+}</pre><p>Đây là mô tả cấu trúc; các chuỗi selector không phải selector portal. Mọi nguồn đều phải có headerMappings từ mẫu đã kiểm chứng. Nhãn trạng thái chưa có mapping sẽ được gửi là UNKNOWN và backend kiểm tra STATUS_MAPPING. Không ánh xạ cột tên người nộp, CCCD, điện thoại, địa chỉ hoặc tài liệu đính kèm.</p></details>
+<ul id="sources"></ul><script type="module" src="options.mjs"></script></body></html>

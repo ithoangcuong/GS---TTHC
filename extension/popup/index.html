@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collector hồ sơ</title><link rel="stylesheet" href="../ui.css"></head>
+<body class="popup"><h1>Collector hồ sơ</h1><p id="portal">Đang kiểm tra portal…</p><p id="status" role="status"></p>
+<button id="sync" disabled>Đồng bộ trang hiện tại</button><button id="resume" hidden>Gửi lại batch lỗi</button>
+<p class="note">Chỉ đọc bảng trên trang đang mở sau khi xác nhận đăng nhập và selector đã kiểm chứng. Phân trang thủ công; mở từng trang rồi đồng bộ.</p>
+<details><summary>Kết nối hệ thống trung tâm</summary><form id="central"><label>URL Apps Script Web App<input id="url" type="url" placeholder="https://script.google.com/macros/s/DEPLOYMENT/exec" required></label>
+<label>Collector token<input id="token" type="password" autocomplete="off" required></label><p class="note">Đăng nhập Dashboard, tạo collector token cho nguồn đang mở rồi dán vào đây. Không dùng Google access token/ID token hay thông tin đăng nhập portal. Token chỉ giữ trong phiên trình duyệt.</p><button type="submit">Lưu kết nối</button></form><button id="clear">Xóa token trong phiên</button></details>
+<button id="options">Cấu hình adapter đã kiểm chứng</button><pre id="result"></pre><script type="module" src="popup.mjs"></script></body></html>

@@ -1,0 +1,437 @@
+<script>
+'use strict';
+(() => {
+  const STATUS = {NEW:'Mới',RECEIVED:'Đã tiếp nhận',PROCESSING:'Đang xử lý',WAITING_ADDITIONAL_DOCUMENTS:'Chờ bổ sung',PAUSED:'Tạm dừng',TRANSFERRED:'Đã chuyển',COMPLETED:'Hoàn thành',RETURNED:'Đã trả lại',CANCELLED:'Đã hủy',OVERDUE:'Trễ hạn',UNKNOWN:'Chưa xác định'};
+  const ALERT = {SAFE:'An toàn',WARNING:'Sắp đến hạn',OVERDUE:'Trễ hạn',REVIEW:'Cần xác minh',NEEDS_REVIEW:'Cần xác minh',STALE_DATA:'Dữ liệu cũ',SOURCE_ERROR:'Lỗi đồng bộ'};
+  const ROLE = {SUPER_ADMIN:'Quản trị toàn hệ thống',ADMIN:'Quản trị viên',LEADER:'Lãnh đạo',MANAGER:'Quản lý đơn vị',OFFICER:'Cán bộ',VIEWER:'Chỉ xem'};
+  const SOURCE_STATUS = {WAITING_FOR_SAMPLE:'Chờ mẫu portal',PARTIAL:'Một phần',IMPLEMENTED:'Đã có adapter',READY:'Sẵn sàng',NOT_LOGGED_IN:'Chưa đăng nhập',NOT_SYNCED:'Chưa đồng bộ',SYNCING:'Đang đồng bộ',SYNC_SUCCESS:'Đồng bộ thành công',SYNC_ERROR:'Lỗi đồng bộ',SUCCESS:'Thành công',ERROR:'Lỗi',ADAPTER_ERROR:'Lỗi adapter',DISABLED:'Đã tắt'};
+  const TITLES = {dashboard:'Tổng quan điều hành',cases:'Danh sách hồ sơ',alerts:'Trung tâm cảnh báo',reports:'Báo cáo tổng hợp',statistics:'Thống kê',sources:'Nguồn dữ liệu',officers:'Cán bộ',users:'Người dùng',audit:'Nhật ký kiểm toán',settings:'Cấu hình nghiệp vụ',sync:'Lịch sử đồng bộ'};
+  const SESSION_KEY='tthc.dashboard.session';
+  let sessionToken='';
+  try {sessionToken=sessionStorage.getItem(SESSION_KEY)||'';} catch (_) {}
+  const state = {user:null,permissions:{},config:{},settings:{},sources:[],route:'dashboard',id:'',filters:{},request:0,result:null,sessionTime:null,clockOffset:0,sessionToken,loginAttempt:0,passwordChange:false};
+  const app = document.querySelector('#app');
+  const e = value => String(value == null ? '' : value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const array = value => Array.isArray(value) ? value : [];
+  const number = value => value != null && Number.isFinite(Number(value)) ? Number(value).toLocaleString('vi-VN') : '—';
+  const percent = value => value != null && Number.isFinite(Number(value)) ? Number(value).toLocaleString('vi-VN',{maximumFractionDigits:1})+'%' : '—';
+  const now = () => Date.now()+state.clockOffset;
+  function date(value, withTime=true) {
+    if (!value || !Number.isFinite(new Date(value).getTime())) return '—';
+    const format=new Intl.DateTimeFormat('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit',...(withTime?{hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}:{})});
+    const parts=Object.fromEntries(format.formatToParts(new Date(value)).map(part=>[part.type,part.value]));
+    return parts.day+'/'+parts.month+'/'+parts.year+(withTime?' '+parts.hour+':'+parts.minute+':'+parts.second:'');
+  }
+  function duration(seconds) {
+    const total = Math.max(0,Math.floor(Math.abs(Number(seconds)||0)));
+    const days = Math.floor(total/86400), hours = Math.floor(total%86400/3600), minutes = Math.floor(total%3600/60);
+    return days ? days+' ngày '+hours+' giờ' : hours ? hours+' giờ '+minutes+' phút' : minutes ? minutes+' phút' : 'dưới 1 phút';
+  }
+  function remaining(due) {
+    if (!due || !Number.isFinite(new Date(due).getTime())) return 'Chưa xác minh ngày hẹn';
+    const seconds=(new Date(due).getTime()-now())/1000;
+    return (seconds<=0?'Quá hạn ':'Còn ')+duration(seconds);
+  }
+  function countdown(record) {
+    if (['COMPLETED','RETURNED','CANCELLED'].includes(record.normalizedStatus)) return e(STATUS[record.normalizedStatus]);
+    if (record.needsReview || ['REVIEW','NEEDS_REVIEW'].includes(record.alertLevel)) return 'Cần xác minh hạn trả';
+    return '<span data-countdown="'+e(record.effectiveDueAt||'')+'">'+e(remaining(record.effectiveDueAt))+'</span>';
+  }
+  function observation(record) {
+    if (!record.lastObservedAt || !Number.isFinite(new Date(record.lastObservedAt).getTime())) return '<span class="badge review">Chưa có quan sát</span>';
+    const age=Math.max(0,(now()-new Date(record.lastObservedAt).getTime())/1000);
+    const staleSeconds=Number(state.settings.staleSeconds);
+    const stale=record.isStale === true || record.stale === true || (Number.isFinite(staleSeconds) && age>staleSeconds);
+    return '<span class="cell-primary">'+e(date(record.lastObservedAt))+'</span>'+ (stale?'<span class="cell-secondary stale-note">Chưa cập nhật trong '+e(duration(age))+'</span>':'<span class="cell-secondary">Quan sát từ cổng nguồn</span>');
+  }
+  function safeUrl(value) {
+    try {const url=new URL(value);return url.protocol==='https:'?url.href:'';} catch (_) {return '';}
+  }
+  function sourceId(source) {return source.id||source.sourceSystem||source.sourceId||'';}
+  function sourceName(source) {return source.name||source.sourceName||sourceId(source);}
+  function sourceLabel(id) {const source=state.sources.find(item=>sourceId(item)===id);return source?sourceName(source):id||'—';}
+  function portal(value,label='Mở cổng nguồn ↗') {
+    const url=safeUrl(value);return url?'<a class="text-link" href="'+e(url)+'" target="_blank" rel="noopener noreferrer">'+e(label)+'</a>':'<span class="muted">Chưa có liên kết</span>';
+  }
+  function icon(name) {
+    const paths={dashboard:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',cases:'M4 4h6l2 3h8v13H4z M4 10h16',alerts:'M12 3 2 21h20L12 3z M12 9v5 M12 17h.01',sources:'M9 4H4v5 M15 4h5v5 M4 15v5h5 M20 15v5h-5 M9 9h6v6H9z',users:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8',reports:'M4 3h12l4 4v14H4z M8 16v-4 M12 16V9 M16 16v-6',settings:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M12 2v3 M12 19v3 M2 12h3 M19 12h3 M5 5l2 2 M17 17l2 2 M5 19l2-2 M17 7l2-2',audit:'M4 3h16v18H4z M8 7h8 M8 12h8 M8 17h5',shield:'M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6l-9-4z M8 12l3 3 5-6',menu:'M3 6h18 M3 12h18 M3 18h18',sync:'M20 7a8 8 0 0 0-14-2L3 8 M3 3v5h5 M4 17a8 8 0 0 0 14 2l3-3 M16 16h5v5'};
+    return '<svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="'+(paths[name]||paths.cases)+'"/></svg>';
+  }
+  function badge(code,label) {return '<span class="badge '+(/^[A-Z_]+$/.test(code||'')?code.toLowerCase():'unknown')+'"><span class="badge-dot" aria-hidden="true"></span>'+e(label||ALERT[code]||STATUS[code]||SOURCE_STATUS[code]||code||'Chưa xác định')+'</span>';}
+  function empty(title='Chưa có dữ liệu',message='Kết quả sẽ hiển thị sau khi dữ liệu được đồng bộ trong phạm vi được cấp.',action='') {return '<div class="empty-state"><span class="empty-symbol" aria-hidden="true">◇</span><h3>'+e(title)+'</h3><p>'+e(message)+'</p>'+action+'</div>';}
+  function notice(message,type='') {return '<div class="notice '+e(type)+'"><p>'+e(message)+'</p></div>';}
+  function loading(message='Đang tải dữ liệu…') {return '<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span>'+e(message)+'</div>';}
+  function toast(message,type='success') {const node=document.createElement('div'),region=document.querySelector('#toast-region');node.className='toast '+(type==='error'?'error':'success');node.textContent=message;while(region.children.length>=2)region.firstElementChild.remove();region.append(node);setTimeout(()=>node.remove(),6500);}
+  function rpc(action,payload={}) {
+    return new Promise((resolve,reject)=>{
+      if (!window.google || !google.script || !google.script.run) {reject(Object.assign(new Error('Trang này cần được mở từ Web App Google Apps Script đã triển khai.'),{code:'APPS_SCRIPT_REQUIRED'}));return;}
+      google.script.run.withSuccessHandler(response=>{
+        if (response && response.ok===true) resolve(response.data);
+        else {const detail=response&&response.error||{};reject(Object.assign(new Error(detail.message||'Yêu cầu chưa hoàn tất. Vui lòng thử lại.'),{code:detail.code||'SERVER_ERROR',requestId:detail.requestId}));}
+      }).withFailureHandler(error=>reject(Object.assign(new Error(error&&error.message||'Không thể kết nối máy chủ. Vui lòng thử lại.'),{code:'CONNECTION_ERROR'}))).rpc(action,payload,state.sessionToken);
+    });
+  }
+  const option=(value,label,selected)=>'<option value="'+e(value)+'"'+(String(value)===String(selected==null?'':selected)?' selected':'')+'>'+e(label)+'</option>';
+  const field=(label,control,note='')=>'<label class="field"><span>'+e(label)+'</span>'+control+(note?'<small>'+e(note)+'</small>':'')+'</label>';
+  const input=(name,type='text',value='',extra='')=>'<input name="'+e(name)+'" type="'+e(type)+'" value="'+e(value)+'" '+extra+'>';
+  function select(name,values,selected,placeholder='Tất cả') {return '<select name="'+e(name)+'">'+(placeholder!==null?option('',placeholder,selected):'')+values.map(row=>option(row[0],row[1],selected)).join('')+'</select>';}
+  function heading(title,description,actions='') {return '<div class="page-heading"><div><div class="eyebrow">TTHC MONITOR</div><h1>'+e(title)+'</h1><p>'+e(description)+'</p></div><div class="heading-actions">'+actions+'</div></div>';}
+  function panel(title,subtitle,content,actions='',body=false) {return '<section class="panel"><div class="panel-heading"><div><h2>'+e(title)+'</h2>'+(subtitle?'<p>'+e(subtitle)+'</p>':'')+'</div>'+actions+'</div>'+(body?'<div class="panel-body">'+content+'</div>':content)+'</section>';}
+  function table(headers,rows) {return '<div class="table-scroll"><table class="data-table"><thead><tr>'+headers.map(header=>'<th scope="col">'+e(header)+'</th>').join('')+'</tr></thead><tbody>'+rows.join('')+'</tbody></table></div>';}
+  function link(page,params={},id='') {const query=new URLSearchParams({...params,...(id?{id}:{})});return '#'+page+(query.toString()?'?'+query.toString():'');}
+  function readRoute() {
+    const text=location.hash.slice(1)||'dashboard';const split=text.indexOf('?');const route=split<0?text:text.slice(0,split);const params=new URLSearchParams(split<0?'':text.slice(split+1));
+    state.route=Object.hasOwn(TITLES,route)?route:'dashboard';state.id=params.get('id')||'';params.delete('id');state.filters=Object.fromEntries(params);
+  }
+  function navigate(page,params={},id='') {const target=link(page,params,id);if(location.hash===target)render();else location.hash=target;}
+  function can(permission) {return state.permissions[permission]===true;}
+  function caseFilters() {
+    const accepted=['q','sourceSystem','normalizedStatus','alertLevel','agencyName','departmentName','officerName','procedureName','agencyKey','departmentKey','officerKey','procedureKey','receivedFrom','receivedTo','dueFrom','dueTo','observedBefore','sortBy','sortDirection','bucket'];
+    return Object.fromEntries(Object.entries(state.filters).filter(([key])=>accepted.includes(key)));
+  }
+  function filters({cases=false,reports=false,reportPeriod=false,alerts=false,audit=false}={}) {
+    const f=state.filters;
+    return '<form id="filter-form" class="filters">'+field(audit?'Tìm hành động / đối tượng':'Mã hồ sơ hoặc từ khóa',input('q','search',f.q||'','maxlength="160" placeholder="Mã hồ sơ hoặc từ khóa…"'))+
+      (!audit?field('Nguồn dữ liệu',select('sourceSystem',state.sources.map(source=>[sourceId(source),sourceName(source)]),f.sourceSystem)):'')+
+      (cases||reports?field('Cơ quan',input('agencyName','text',f.agencyName||'','maxlength="160"'))+field('Cán bộ',input('officerName','text',f.officerName||'','maxlength="160"')):'')+
+      (alerts?field('Nhóm cảnh báo',select('kind',[['OVERDUE','Quá hạn'],['WARNING','Sắp đến hạn'],['STALE_DATA','Chưa cập nhật dữ liệu'],['SOURCE_ERROR','Lỗi đồng bộ nguồn'],['NEEDS_REVIEW','Cần xác minh']],f.kind)):'')+
+      '<button class="button" type="submit">Lọc dữ liệu</button><button class="button secondary" type="button" data-clear-filters>Xóa lọc</button>'+
+      (cases?'<details class="advanced-filter-details" '+(['departmentName','procedureName','normalizedStatus','alertLevel','dueFrom','dueTo','observedBefore'].some(key=>f[key])?'open':'')+'><summary>Bộ lọc thêm · trạng thái, hạn trả, quan sát</summary><div class="advanced-filters">'+
+       field('Phòng / đơn vị',input('departmentName','text',f.departmentName||'','maxlength="160"'))+field('Thủ tục',input('procedureName','text',f.procedureName||'','maxlength="160"'))+
+       field('Trạng thái',select('normalizedStatus',Object.entries(STATUS),f.normalizedStatus))+field('Cảnh báo',select('alertLevel',Object.entries(ALERT).filter(item=>!['STALE_DATA','SOURCE_ERROR'].includes(item[0])),f.alertLevel))+
+       field('Hẹn trả từ ngày',input('dueFrom','date',f.dueFrom||''))+field('Hẹn trả đến ngày',input('dueTo','date',f.dueTo||''))+field('Quan sát trước ngày',input('observedBefore','date',f.observedBefore||''))+
+       field('Sắp xếp',select('sortBy',[['priority','Ưu tiên xử lý'],['dueAt','Hạn trả'],['lastObservedAt','Quan sát lần cuối'],['receivedAt','Ngày tiếp nhận']],f.sortBy||'priority',null))+
+       field('Chiều sắp xếp',select('sortDirection',[['asc','Tăng dần'],['desc','Giảm dần']],f.sortDirection||'asc',null))+
+       field('Số dòng / trang',select('pageSize',[['25','25'],['50','50'],['100','100']],f.pageSize||'25',null))+'</div></details>':'')+
+      (reports?'<div class="advanced-filters">'+(reportPeriod?field('Kỳ báo cáo',select('period',[['day','Hôm nay'],['week','Tuần này'],['month','Tháng này'],['custom','Khoảng tùy chọn']],f.period||'month',null)):'')+field('Tiếp nhận từ ngày',input('receivedFrom','date',f.receivedFrom||''))+field('Tiếp nhận đến ngày',input('receivedTo','date',f.receivedTo||''))+field('Đơn vị',input('departmentName','text',f.departmentName||'','maxlength="160"'))+'</div>':'')+'</form>';
+  }
+  function pagination(result) {
+    const page=Number(result.page)||1,size=Number(result.pageSize)||25,total=Number(result.total)||0,pages=Math.max(1,Math.ceil(total/size));
+    return '<div class="pagination"><span>'+(total?number((page-1)*size+1)+'–'+number(Math.min(page*size,total)):'0')+' / '+number(total)+' kết quả</span><div><button class="button ghost small" data-page="'+(page-1)+'" '+(page<=1?'disabled':'')+'>← Trước</button><span>Trang '+number(page)+' / '+number(pages)+'</span><button class="button ghost small" data-page="'+(page+1)+'" '+(page>=pages?'disabled':'')+'>Sau →</button></div></div>';
+  }
+  function caseTable(items,compact=false) {
+    if (!array(items).length) return empty('Không có hồ sơ phù hợp','Thử điều chỉnh bộ lọc hoặc kiểm tra tình trạng đồng bộ tại Nguồn dữ liệu.');
+    return table(compact?['Hồ sơ / thủ tục','Cán bộ / bước','Hạn trả / thời gian','Quan sát lần cuối','Cảnh báo']:['Hồ sơ / nguồn','Thủ tục','Cơ quan / cán bộ','Bước xử lý','Ngày hẹn trả','Thời gian','Quan sát lần cuối','Trạng thái / cảnh báo'],items.map(record=>{
+      const caseCell='<a class="cell-primary text-link" href="'+e(link('cases',{},record.id))+'">'+e(record.caseCode||record.id)+'</a><span class="cell-secondary">'+e(compact?record.procedureName:sourceLabel(record.sourceSystem))+'</span>';
+      const step=record.currentStep!=null?e(record.currentStep)+(record.totalSteps!=null?' / '+e(record.totalSteps):''):'<span class="muted">Nguồn chưa cung cấp</span>';
+      return compact?'<tr><td class="wrap">'+caseCell+'</td><td>'+e(record.officerName||'Chưa phân công')+'<span class="cell-secondary">Bước '+step+'</span></td><td>'+e(date(record.effectiveDueAt))+'<span class="cell-secondary">'+countdown(record)+'</span></td><td>'+observation(record)+'</td><td>'+badge(record.alertLevel)+'</td></tr>':
+        '<tr><td>'+caseCell+'</td><td class="wrap">'+e(record.procedureName||'—')+'</td><td>'+e(record.agencyName||'—')+'<span class="cell-secondary">'+e(record.officerName||'Chưa phân công')+'</span></td><td>'+step+'</td><td>'+e(date(record.effectiveDueAt))+'</td><td>'+countdown(record)+'</td><td>'+observation(record)+'</td><td>'+badge(record.normalizedStatus)+'<span class="cell-secondary">'+badge(record.alertLevel)+'</span></td></tr>';
+    }));
+  }
+  function metric(label,value,noteText,kind='',href='') {return '<'+(href?'a href="'+e(href)+'"':'div')+' class="metric '+e(kind)+'"><div class="metric-label">'+e(label)+'</div><div class="metric-symbol">'+icon(kind==='overdue'||kind==='warning'?'alerts':'cases')+'</div><div class="metric-value">'+e(value)+'</div><div class="metric-note">'+e(noteText)+'</div></'+(href?'a':'div')+'>';}
+  function kpis(k,report=false) {
+    const f=caseFilters();
+    return '<div class="metrics">'+metric('Đang xử lý',number(k.totalProcessing),'Trong phạm vi được cấp','',link('cases',{...f,bucket:'active'}))+
+      metric('Sắp đến hạn',number(k.warning),'Ngưỡng cảnh báo theo cấu hình','warning',link('cases',{...f,alertLevel:'WARNING'}))+
+      metric('Trễ hạn',number(k.overdue),'Theo hạn trả hiệu lực','overdue',link('cases',{...f,alertLevel:'OVERDUE'}))+
+      metric('Tỷ lệ hoàn thành đúng hạn',percent(k.onTimeRate),'Đúng hạn / hồ sơ hoàn thành có hạn xác minh','',link('cases',{...f,bucket:'completed'}))+'</div>'+
+      (report?'<div class="metrics">'+metric('Tổng hồ sơ',number(k.total),'Trong bộ lọc báo cáo')+metric('Hoàn thành',number(k.completed),'Dữ liệu từ nguồn')+metric('Hoàn thành trễ',number(k.completedLate),'Sau ngày hẹn trả')+metric('Cần xác minh',number(k.unknown),'Trạng thái / hạn chưa xác định')+'</div>':'');
+  }
+  function distribution(items) {
+    if (!array(items).length) return empty('Chưa có phân bố','Chưa có dữ liệu hồ sơ để thống kê trạng thái.');
+    const total=items.reduce((sum,row)=>sum+(Number(row.count)||0),0);
+    if (!total) return empty('Chưa có hồ sơ','Phân bố sẽ xuất hiện sau lượt đồng bộ đầu tiên.');
+    const colors=['#30728f','#4c9c74','#d7b043','#cd5864','#8357a3','#598bcb','#8b99a7'];
+    return '<div class="distribution" aria-hidden="true">'+items.map((row,i)=>'<span style="flex:'+Math.max(0,Number(row.count)||0)+';background:'+colors[i%colors.length]+'"></span>').join('')+'</div><div class="legend">'+items.map((row,i)=>'<div class="legend-row"><span><i class="dot" style="background:'+colors[i%colors.length]+'"></i>'+e(STATUS[row.status]||row.status)+'</span><strong>'+number(row.count)+'</strong></div>').join('')+'</div>';
+  }
+  function groupTable(items,dimension,clickable=true) {
+    if (!array(items).length) return empty('Chưa có thống kê','Kết quả được tổng hợp từ hồ sơ trong phạm vi được cấp.');
+    const filterKeys={source:'sourceSystem',agency:'agencyKey',department:'departmentKey',officer:'officerKey',procedure:'procedureKey'};
+    return table(['Tên / phạm vi','Tổng hồ sơ','Đang xử lý','Sắp hạn','Trễ hạn','Đúng hạn','Tỷ lệ đúng hạn'],items.map(row=>{
+      const k=row.kpis||row,key=row.key||row.id||row.name||row.label,label=row.label||row.name||key||'Chưa xác định';
+      return '<tr><td class="wrap">'+(clickable?'<a class="text-link" href="'+e(link('cases',{...caseFilters(),[filterKeys[dimension]||'q']:key}))+'">'+e(label)+'</a>':e(label))+'</td><td>'+number(k.total)+'</td><td>'+number(k.totalProcessing)+'</td><td>'+number(k.warning)+'</td><td>'+number(k.overdue)+'</td><td>'+number(k.onTime)+'</td><td>'+percent(k.onTimeRate)+'</td></tr>';
+    }));
+  }
+  function barChart(items,dimension) {
+    const rows=array(items).slice().sort((a,b)=>Number((b.kpis||b).total)-Number((a.kpis||a).total)).slice(0,8);
+    if(!rows.length)return empty('Chưa có biểu đồ','Biểu đồ được tính từ hồ sơ đã đồng bộ.');
+    const maximum=Math.max(1,...rows.map(row=>Number((row.kpis||row).total)||0));
+    const fields={source:'sourceSystem',officer:'officerKey',procedure:'procedureKey'};
+    return '<div class="bar-chart">'+rows.map(row=>{const k=row.kpis||row,value=Number(k.total)||0,key=row.key||row.id||row.label,label=row.label||row.name||key;return '<a class="bar-row" href="'+e(link('cases',{...caseFilters(),[fields[dimension]]:key}))+'"><span class="bar-label">'+e(label)+'</span><span class="bar-track" aria-hidden="true"><i style="width:'+Math.round(value/maximum*100)+'%"></i></span><strong>'+number(value)+'</strong></a>';}).join('')+'</div>';
+  }
+  function completionChart(k) {
+    if(k.onTime==null||k.completedLate==null)return empty('Chưa có kết quả hoàn thành','Nguồn chưa cung cấp đủ ngày hoàn thành và ngày hẹn trả.');
+    const total=Number(k.onTime)+Number(k.completedLate);
+    if(!total)return empty('Chưa có hồ sơ hoàn thành được xác minh','Tỷ lệ đúng hạn được tính khi có hồ sơ hoàn thành và hạn trả.');
+    return '<div class="completion-chart"><div class="completion-rate">'+percent(k.onTimeRate)+'</div><p>Hoàn thành đúng hạn</p><div class="distribution" aria-hidden="true"><span class="safe-color" style="flex:'+Number(k.onTime)+'"></span><span class="overdue-color" style="flex:'+Number(k.completedLate)+'"></span></div><div class="legend"><a class="legend-row text-link" href="'+e(link('cases',{...state.filters,bucket:'onTime'}))+'"><span><i class="dot safe-color"></i>Đúng hạn</span><strong>'+number(k.onTime)+'</strong></a><a class="legend-row text-link" href="'+e(link('cases',{...state.filters,bucket:'completedLate'}))+'"><span><i class="dot overdue-color"></i>Trễ hạn</span><strong>'+number(k.completedLate)+'</strong></a></div></div>';
+  }
+  function freshness(k,health) {
+    const older24h=k.totalProcessing!=null&&k.observed24h!=null?Math.max(0,Number(k.totalProcessing)-Number(k.observed24h)):null;
+    const unsynced=array(health).filter(source=>!source.lastSyncedAt&&!source.lastSyncAt).length;
+    return '<div class="freshness-header"><div class="freshness-value">'+percent(k.observed24hRate)+'</div><div><strong>Hồ sơ đang xử lý được quan sát trong 24 giờ</strong><p class="muted">Tính theo lần quan sát tại cổng nguồn.</p></div></div><div class="stat-inline"><div><strong>'+number(k.totalProcessing)+'</strong><span>Đang xử lý</span></div><div><strong>'+number(k.observed24h)+'</strong><span>Quan sát trong 24h</span></div><div><strong>'+number(older24h)+'</strong><span>Chưa quan sát trong 24h</span></div><div><strong>'+number(k.stale)+'</strong><span>Chưa cập nhật theo ngưỡng</span></div><div><strong>'+number(unsynced)+'</strong><span>Nguồn chưa có lượt đồng bộ</span></div></div>'+notice('Dữ liệu phản ánh lần quan sát gần nhất. Khi cổng nguồn chưa được thu thập lại, trạng thái thực tế có thể đã thay đổi.','warning')+
+      (array(health).length?table(['Nguồn','Tình trạng adapter','Quan sát gần nhất','Đồng bộ gần nhất'],health.map(source=>'<tr><td>'+e(sourceName(source))+'</td><td>'+badge(source.adapterStatus||source.status)+'</td><td>'+e(date(source.lastObservedAt))+'</td><td>'+e(date(source.lastSyncedAt||source.lastSyncAt))+'</td></tr>')):empty('Chưa có lượt đồng bộ nguồn','Mở Nguồn dữ liệu để kiểm tra adapter và hướng dẫn cung cấp mẫu.'));
+  }
+  async function dashboard() {
+    const result=await rpc('dashboard.summary',state.filters);state.result=result;
+    const critical=await rpc('cases.list',{...state.filters,bucket:'active',page:1,pageSize:8,sortBy:'priority',sortDirection:'asc'});
+    const k=result.kpis||{};
+    return heading('Tổng quan điều hành','Giám sát hạn trả, cảnh báo và độ mới của dữ liệu.', '<button class="button secondary" data-refresh>'+icon('sync')+'Làm mới</button>')+filters()+kpis(k)+
+      '<div class="metrics">'+metric('Chờ bổ sung',number(k.waitingAdditional),'Trạng thái do nguồn cung cấp','',link('cases',{...state.filters,normalizedStatus:'WAITING_ADDITIONAL_DOCUMENTS'}))+
+      metric('Hoàn thành đúng hạn',number(k.onTime),'Hoàn thành không muộn hơn hạn trả','',link('cases',{...state.filters,bucket:'onTime'}))+
+      metric('Quan sát trong 24 giờ',percent(k.observed24hRate),'Trong số hồ sơ đang xử lý','',link('cases',{...state.filters,bucket:'observed24h'}))+
+      metric('Dữ liệu chưa cập nhật',number(k.stale),'Quá ngưỡng độ mới được cấu hình','warning',link('cases',{...state.filters,bucket:'stale'}))+'</div>'+
+      '<div class="dashboard-grid">'+panel('Phân bố trạng thái','Hồ sơ từ các nguồn đã đồng bộ.',distribution(result.statusDistribution),'',true)+panel('Kết quả hoàn thành','Chỉ hồ sơ có ngày hoàn thành và hạn trả xác minh.',completionChart(k),'',true)+'</div>'+
+      '<div class="dashboard-grid">'+panel('Hồ sơ theo nguồn','Bấm nguồn để xem hồ sơ.',barChart(result.bySource,'source'),' ',true)+panel('Hồ sơ theo cán bộ','Những cán bộ xuất hiện trong dữ liệu.',barChart(result.byOfficer,'officer'),' ',true)+'</div>'+
+      panel('Theo thủ tục','Dữ liệu nguồn chưa có trường lĩnh vực riêng.',barChart(result.byProcedure,'procedure'),' ',true)+
+      panel('Hồ sơ cần ưu tiên','Ưu tiên quá hạn, sắp đến hạn và dữ liệu lâu chưa cập nhật.',caseTable(critical.items,true),'<a class="text-link" href="'+e(link('cases',{...state.filters,bucket:'active',sortBy:'priority'}))+'">Xem tất cả →</a>')+
+      panel('Độ tin cậy dữ liệu','Quan sát và đồng bộ là hai thời điểm riêng biệt.',freshness(k,result.sourceHealth),'',true)+
+      '<p class="muted report-generated">Bản tổng hợp tính lúc '+e(date(result.generatedAt))+'</p>';
+  }
+  async function cases() {
+    if (state.id) return caseDetail();
+    const result=await rpc('cases.list',{...state.filters,page:Number(state.filters.page)||1,pageSize:Number(state.filters.pageSize)||25});state.result=result;
+    const groups=[['agencyKey','cơ quan'],['departmentKey','đơn vị'],['officerKey','cán bộ'],['procedureKey','thủ tục']].filter(([key])=>state.filters[key]).map(([,label])=>label);
+    return heading('Danh sách hồ sơ','Theo dõi hồ sơ theo nguồn, đơn vị, cán bộ và hạn trả.',can('canExport')?'<button class="button secondary" data-export="cases">'+icon('reports')+'Xuất CSV</button>':'')+(groups.length?notice('Đang lọc theo nhóm '+groups.join(', ')+' đã chọn từ biểu đồ hoặc báo cáo. Xóa lọc để xem toàn bộ phạm vi được cấp.'):'')+filters({cases:true})+panel('Hồ sơ trong phạm vi được cấp','Ngày hẹn trả và quan sát lấy từ cổng nguồn.',caseTable(result.items)+pagination(result));
+  }
+  function detail(label,value,html=false) {return '<div><dt>'+e(label)+'</dt><dd>'+(html?value:e(value==null||value===''?'—':value))+'</dd></div>';}
+  async function caseDetail() {
+    const result=await rpc('cases.detail',{id:state.id});const record=result.case||result;state.result=record;
+    const history=array(result.history||record.history);
+    return heading(record.caseCode||'Chi tiết hồ sơ',record.procedureName||'Thủ tục chưa được nguồn cung cấp.','<a class="button secondary" href="'+e(link('cases'))+'">← Danh sách hồ sơ</a>')+
+      (record.isStale||record.stale?notice('Dữ liệu chưa được cập nhật trong '+duration((now()-new Date(record.lastObservedAt).getTime())/1000)+'. Cần quan sát lại trên cổng nguồn.','warning'):'')+
+      '<div class="detail-grid">'+panel('Thông tin hồ sơ','Dữ liệu chuẩn hóa từ nguồn; không suy diễn quy trình.', '<dl class="detail-list">'+
+        detail('Mã hồ sơ',record.caseCode)+detail('Nguồn',sourceLabel(record.sourceSystem))+detail('Mã thủ tục',record.procedureCode)+detail('Thủ tục',record.procedureName)+
+        detail('Ngày nộp',date(record.submittedAt))+detail('Ngày tiếp nhận',date(record.receivedAt))+detail('Hẹn trả ban đầu',date(record.originalDueAt))+detail('Hẹn trả hiệu lực',date(record.effectiveDueAt))+
+        detail('Hoàn thành',date(record.completedAt))+detail('Trạng thái nguồn',record.sourceStatus)+detail('Trạng thái chuẩn',badge(record.normalizedStatus),true)+detail('Đơn vị',record.departmentName)+
+        detail('Cơ quan',record.agencyName)+detail('Cán bộ',record.officerName)+detail('Bước hiện tại',record.currentStep)+detail('Tổng số bước',record.totalSteps)+
+        detail('Quan sát lần cuối',observation(record),true)+detail('Đồng bộ lần cuối',date(record.lastSyncedAt))+'</dl>','',true)+
+        panel('Hạn trả & cảnh báo','Quy tắc tính ở máy chủ Apps Script.','<div class="deadline-display">'+countdown(record)+'</div><p>'+badge(record.alertLevel)+'</p><dl class="detail-list">'+detail('Kết quả hoàn thành',({ON_TIME:'Hoàn thành đúng hạn',LATE:'Hoàn thành trễ',UNKNOWN:'Chưa đủ dữ liệu xác minh'})[record.completionResult]||'Chưa hoàn thành')+detail('Điểm rủi ro',record.riskScore!=null?number(record.riskScore)+'/100':'Chưa đánh giá')+'</dl><ul class="reason-list">'+array(record.riskReasons).map(reason=>'<li>'+e(typeof reason==='string'?reason:reason.message||reason.code||'')+'</li>').join('')+'</ul><p>'+portal(record.sourceUrl||record.sourceRecordUrl)+'</p>','',true)+'</div>'+
+        panel('Lịch sử trạng thái','Chỉ hiển thị lịch sử đã được nguồn hoặc hệ thống ghi nhận.',history.length?'<ol class="timeline">'+history.map(event=>'<li><strong>'+e(STATUS[event.normalizedStatus||event.status]||event.status||event.action)+'</strong><p>'+e(date(event.observedAt||event.at||event.createdAt))+'</p><p>'+e(event.note||'')+'</p></li>').join('')+'</ol>':empty('Nguồn chưa cung cấp lịch sử trạng thái','Lần quan sát hiện tại không đủ để dựng lại các bước xử lý trước đó.'),'',true);
+  }
+  async function alerts() {
+    const result=await rpc('alerts.list',{...state.filters,page:Number(state.filters.page)||1,pageSize:25});state.result=result;
+    const items=array(result.items);
+    return heading('Trung tâm cảnh báo','Quá hạn, sắp đến hạn và hồ sơ chưa được quan sát lại.','<a class="button secondary" href="'+e(link('sync'))+'">Lỗi & lịch sử đồng bộ</a>')+filters({alerts:true})+
+      panel('Cảnh báo trong phạm vi được cấp','Xác nhận tiếp nhận không thay đổi trạng thái trên cổng nguồn.',items.length?table(['Nhóm / hồ sơ','Nội dung','Quan sát / phát sinh','Tiếp nhận','Thao tác'],items.map(alert=>{const acknowledged=Boolean(alert.acknowledgedAt||alert.status==='ACKNOWLEDGED');return '<tr><td>'+badge(alert.kind||alert.type||alert.alertLevel)+'<span class="cell-secondary">'+(alert.caseId?'<a class="text-link" href="'+e(link('cases',{},alert.caseId))+'">'+e(alert.caseCode||alert.caseId)+'</a>':e(sourceLabel(alert.sourceSystem)))+'</span></td><td class="wrap">'+e(alert.message||alert.title||ALERT[alert.kind]||'')+'</td><td>'+e(date(alert.lastObservedAt||alert.createdAt))+'</td><td>'+e(acknowledged?'Đã tiếp nhận'+(alert.acknowledgedAt?' · '+date(alert.acknowledgedAt):''):'Chưa tiếp nhận')+'</td><td>'+(can('canAcknowledge')&&alert.caseId&&!acknowledged?'<button class="button secondary small" data-ack="'+e(alert.id)+'">Xác nhận tiếp nhận</button>':alert.kind==='SOURCE_ERROR'?'Cần đồng bộ lại':'—')+'</td></tr>';}))+pagination(result):empty('Không có cảnh báo phù hợp','Bộ lọc hiện tại không có cảnh báo; đây không phải kết luận rằng mọi nguồn đã cập nhật.'));
+  }
+  async function reports(statistics=false) {
+    const result=await rpc(statistics?'statistics.summary':'reports.summary',state.filters);state.result=result;
+    return heading(statistics?'Thống kê':'Báo cáo tổng hợp','Tổng hợp từ hồ sơ trong phạm vi và khoảng ngày tiếp nhận được chọn.',can('canExport')?'<button class="button secondary" data-export="report">'+icon('reports')+'Xuất báo cáo CSV</button>':'')+filters({reports:true,reportPeriod:true})+kpis(result.kpis||{},true)+
+      (result.period?notice('Khoảng tiếp nhận: '+(result.period.receivedFrom||'Không giới hạn')+' → '+(result.period.receivedTo||'Không giới hạn')):'')+
+      (result.groupLimit?notice('Bảng theo nhóm hiển thị tối đa '+number(result.groupLimit)+' nhóm có nhiều hồ sơ nhất trong mỗi chiều. KPI được tính trên toàn bộ hồ sơ phù hợp bộ lọc. Thu hẹp phạm vi để xem các nhóm khác.'):'')+
+      panel('Theo nguồn','',groupTable(result.bySource,'source'))+panel('Theo cơ quan','',groupTable(result.byAgency,'agency'))+panel('Theo phòng / đơn vị','',groupTable(result.byDepartment,'department'))+panel('Theo cán bộ','',groupTable(result.byOfficer,'officer'))+panel('Theo thủ tục','',groupTable(result.byProcedure,'procedure'));
+  }
+  async function officers() {
+    const result=await rpc('officers.list',state.filters);state.result=result;
+    return heading('Cán bộ','Thống kê theo cán bộ được ghi nhận trong dữ liệu nguồn.')+filters({reports:true})+panel('Khối lượng & kết quả xử lý','Bấm cán bộ để xem danh sách hồ sơ.',groupTable(result.items||result.byOfficer,'officer')+(result.total!=null?pagination(result):''))+notice('Chỉ cán bộ xuất hiện trong dữ liệu nguồn được thống kê. Hệ thống chưa có danh sách nhân sự để xác định cán bộ chưa phát sinh hồ sơ.');
+  }
+  async function sources() {
+    const result=await rpc('sources.list');state.sources=array(result.items);state.result=result;
+    return heading('Nguồn dữ liệu','Một extension với adapter riêng cho từng nguồn.', '<a class="button secondary" href="'+e(link('sync'))+'">'+icon('sync')+'Lịch sử đồng bộ</a>')+
+      notice('Adapter chờ mẫu chưa thu thập dữ liệu. Cần URL danh sách, HTML DOM đã bỏ dữ liệu nhạy cảm, mẫu JSON/XHR được phép và thông tin phân trang.','warning')+
+      (state.sources.length?'<div class="source-grid">'+state.sources.map(source=>{
+        const id=sourceId(source),enabled=source.enabled!==false&&source.enabled!==0;
+        return '<section class="source-card"><div class="source-card-header"><span class="source-pill">'+e(id)+'</span>'+badge(source.adapterStatus||source.status||'WAITING_FOR_SAMPLE')+'</div><h2>'+e(sourceName(source))+'</h2><p class="domain">'+e(source.hostname||source.host||source.url||'')+'</p><div class="source-stats"><div><strong>'+number(source.syncedCount??source.caseCount??source.totalCases)+'</strong>Hồ sơ đồng bộ</div><div><strong>'+number(source.errorCount)+'</strong>Lỗi lần đồng bộ</div></div><dl class="source-facts">'+detail('Adapter',source.adapterVersion||'Chưa có phiên bản')+detail('Trạng thái đồng bộ',source.syncStatus||source.status||'Chưa đồng bộ')+detail('Quan sát gần nhất',date(source.lastObservedAt))+detail('Đồng bộ gần nhất',date(source.lastSyncedAt||source.lastSyncAt))+detail('Lỗi gần nhất',source.lastError||'Chưa ghi nhận')+'</dl>'+(source.adapterStatus==='WAITING_FOR_SAMPLE'?'<p class="sample-note">Chờ mẫu portal; chưa xác nhận selector, API hoặc phân trang.</p>':'')+'<div class="source-card-footer">'+portal(source.url||source.baseUrl)+'<span>'+badge(enabled?'READY':'DISABLED',enabled?'Đang bật':'Đã tắt')+'</span></div>'+(can('canManageSources')?'<div class="form-actions"><button class="button secondary small" data-toggle-source="'+e(id)+'" data-enabled="'+enabled+'">'+(enabled?'Tắt nguồn':'Bật nguồn')+'</button></div>':'')+'</section>';
+      }).join('')+'</div>':empty('Chưa cấu hình nguồn','Quản trị viên cần khởi tạo bảng SOURCES.'))+
+      (can('canSync')?panel('Kết nối extension','Token chỉ dùng để gửi batch thu thập từ nguồn được cấp.','<form id="token-form" class="form-grid">'+field('Nguồn cần kết nối',select('sourceSystem',state.sources.filter(source=>source.enabled!==false).map(source=>[sourceId(source),sourceName(source)]),'',null))+'<div class="form-actions"><button class="button" type="submit">Tạo token extension</button></div></form><div id="token-result"></div>','',true):'');
+  }
+  async function sync() {
+    const result=await rpc('sync.list',{...state.filters,page:Number(state.filters.page)||1,pageSize:25});state.result=result;
+    return heading('Lịch sử đồng bộ','Theo dõi các batch thu thập và lỗi nhập dữ liệu.')+filters()+panel('Các lượt đồng bộ','',array(result.items).length?table(['Nguồn','Thời điểm','Trạng thái','Chấp nhận / từ chối','Thông báo'],result.items.map(row=>'<tr><td>'+e(sourceLabel(row.sourceSystem))+'</td><td>'+e(date(row.createdAt||row.startedAt))+'</td><td>'+badge(row.status)+'</td><td>'+number(row.accepted)+' / '+number(row.rejected)+'</td><td class="wrap">'+e(row.message||row.error||row.errorCode||'—')+'</td></tr>'))+pagination(result):empty('Chưa có lượt đồng bộ','Batch gửi từ extension sẽ được ghi nhận tại đây.'));
+  }
+  function scopeFields(scope={}) {
+    return ['sources','agencies','departments','officers'].map((key,i)=>field(['Nguồn','Cơ quan','Phòng / đơn vị','Cán bộ'][i]+' được phép',input('scope_'+key,'text',array(scope[key]).join(', '),'required maxlength="1200"'),key==='sources'?'ID nguồn, ngăn cách bằng dấu phẩy. * là toàn bộ.':'Tên đúng từ nguồn, ngăn cách bằng dấu phẩy. * là toàn bộ.')).join('');
+  }
+  function userForm(user) {
+    const roles=Object.entries(ROLE).filter(([key])=>state.user.role==='SUPER_ADMIN'||!['SUPER_ADMIN','ADMIN'].includes(key));
+    if(user&&!roles.some(([key])=>key===user.role))roles.unshift([user.role,ROLE[user.role]||user.role]);
+    return '<form id="user-form" class="form-grid" data-user-id="'+e(user&&user.id||'')+'">'+field('Tên đăng nhập',input('username','text',user&&user.username||'','required minlength="3" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._\\-]{2,63}" autocomplete="off" autocapitalize="none" spellcheck="false" '+(user&&user.username?'readonly':'')),'3–64 ký tự, bắt đầu bằng chữ hoặc số; cho phép dấu chấm, gạch dưới và gạch ngang.')+field('Tên hiển thị',input('displayName','text',user&&user.displayName||'','required maxlength="160"'))+
+      field('Vai trò',select('role',roles,user&&user.role||'VIEWER',null))+field('Trạng thái',select('status',[['ACTIVE','Hoạt động'],['DISABLED','Đã tắt']],user&&user.status||'ACTIVE',null))+scopeFields(user&&user.scope||{})+
+      '<div class="wide">'+notice(user?'Mỗi chiều phạm vi cần ít nhất một giá trị. * cho phép toàn bộ chiều đó.':'Tài khoản được cấp mật khẩu mặc định của hệ thống. Người dùng phải đổi mật khẩu khi đăng nhập lần đầu. Mỗi chiều phạm vi cần ít nhất một giá trị; * cho phép toàn bộ chiều đó.')+'</div><div class="form-actions wide"><button class="button" type="submit">'+(user?'Lưu thay đổi':'Cấp tài khoản')+'</button>'+(user?'<button class="button secondary" type="button" data-cancel-user>Hủy chỉnh sửa</button>':'')+'<span id="user-error" class="error-inline" role="alert"></span></div></form>';
+  }
+  async function users() {
+    const result=await rpc('users.list');state.result=result;
+    return heading('Người dùng','Quản trị viên cấp tài khoản, mật khẩu mặc định và phạm vi sử dụng.')+'<div id="account-credentials" aria-live="polite"></div>'+
+      panel('Danh sách tài khoản','Mọi thay đổi được ghi trong nhật ký kiểm toán.',array(result.items).length?table(['Người dùng / tài khoản','Vai trò','Phạm vi','Trạng thái','Đăng nhập cuối','Người tạo','Thao tác'],result.items.map(user=>{
+        const canEdit=state.user.role==='SUPER_ADMIN'||!['SUPER_ADMIN','ADMIN'].includes(user.role),isSelf=user.id===state.user.id;
+        return '<tr><td>'+e(user.displayName)+'<span class="cell-secondary">'+e(user.username||'Chưa cấp tên đăng nhập')+'</span>'+(user.mustChangePassword?'<span class="cell-secondary">Cần đổi mật khẩu</span>':'')+'</td><td>'+e(ROLE[user.role]||user.role)+'</td><td class="wrap">'+['sources','agencies','departments','officers'].map((key,i)=>e(['Nguồn','Cơ quan','Đơn vị','Cán bộ'][i])+': '+e(array(user.scope&&user.scope[key]).join(', ')||'Không có quyền')).join('<br>')+'</td><td>'+badge(user.status,user.status==='ACTIVE'?'Hoạt động':'Đã tắt')+'</td><td>'+e(date(user.lastLoginAt))+'</td><td>'+e(user.createdBy||'—')+'</td><td>'+(canEdit?'<button class="button secondary small" data-edit-user="'+e(user.id)+'">Chỉnh sửa</button> <button class="button '+(user.status==='ACTIVE'?'danger':'secondary')+' small" data-toggle-user="'+e(user.id)+'" '+(isSelf?'disabled':'')+'>'+ (user.status==='ACTIVE'?'Tắt':'Bật')+'</button> <button class="button secondary small" data-reset-password="'+e(user.id)+'" '+(isSelf?'disabled title="Dùng nút Đổi mật khẩu để đổi mật khẩu của bạn."':!user.username?'disabled title="Cấp tên đăng nhập bằng nút Chỉnh sửa trước khi đặt lại mật khẩu."':'')+'>Đặt lại mật khẩu</button>':'—')+'</td></tr>';
+      })):empty('Chưa có người dùng'))+
+      panel('Cấp tài khoản','Tên đăng nhập và mật khẩu mặc định được hiển thị sau khi tạo.','<div id="user-form-region">'+userForm(null)+'</div>','',true);
+  }
+  async function audit() {
+    const result=await rpc('audit.list',{...state.filters,page:Number(state.filters.page)||1,pageSize:25});state.result=result;
+    return heading('Nhật ký kiểm toán','Theo dõi đăng nhập, cấp quyền, thay đổi cấu hình và xuất dữ liệu.')+filters({audit:true})+panel('Sự kiện kiểm toán','Nhật ký chỉ đọc.',array(result.items).length?table(['Thời điểm','Hành động','Người thực hiện','Đối tượng','Kết quả / yêu cầu'],result.items.map(row=>'<tr><td>'+e(date(row.createdAt||row.at))+'</td><td>'+e(row.action||row.event)+'</td><td>'+e(row.actorEmail||row.actorId||row.userId||'—')+'</td><td class="wrap">'+e(row.entityId||row.targetId||row.resource||'—')+'</td><td>'+e(row.result||row.status||(row.details&&row.details.result)||'—')+'<span class="cell-secondary">'+e(row.requestId||'')+'</span></td></tr>'))+pagination(result):empty('Chưa có sự kiện phù hợp','Thử thay đổi bộ lọc tìm kiếm.'));
+  }
+  async function settings() {
+    const result=await rpc('settings.get');state.settings=result;state.result=result;
+    return heading('Cấu hình nghiệp vụ','Ngưỡng cảnh báo áp dụng thống nhất ở máy chủ.')+panel('Hạn trả & độ mới dữ liệu','Không tự suy diễn quy tắc tạm dừng hoặc gia hạn.','<form id="settings-form" class="form-grid">'+
+      field('Cảnh báo trước hạn (giờ)',input('warningHours','number',result.warningSeconds!=null?Number(result.warningSeconds)/3600:'','required min="0.000278" max="720" step="any"'),'Hồ sơ còn trong ngưỡng này được xếp Sắp đến hạn.')+
+      field('Dữ liệu cũ sau (giờ)',input('staleHours','number',result.staleSeconds!=null?Number(result.staleSeconds)/3600:'','required min="1" max="720" step="any"'),'Hiển thị nhắc quan sát lại khi quá thời gian này.')+
+      '<div class="wide">'+notice('Ngày hẹn trả hiệu lực phải đến từ dữ liệu nguồn đã xác minh. Thay đổi ngưỡng sẽ làm tính lại cảnh báo trong lần tổng hợp tiếp theo.')+'</div><div class="form-actions wide"><button class="button" type="submit">Lưu cấu hình</button><span id="settings-error" class="error-inline" role="alert"></span></div></form><dl class="detail-list settings-facts">'+detail('Múi giờ','Asia/Ho_Chi_Minh (UTC+07:00)')+detail('Cập nhật lần cuối',date(result.updatedAt))+'</dl>','',true);
+  }
+  function navItem(page,label,symbol) {return '<a class="nav-link '+(state.route===page?'active':'')+'" href="'+e(link(page))+'" '+(state.route===page?'aria-current="page"':'')+'>'+icon(symbol)+'<span>'+e(label)+'</span></a>';}
+  function shell() {
+    const user=state.user;
+    app.innerHTML='<div class="shell"><aside class="sidebar" id="sidebar" aria-label="Điều hướng chính"><a class="brand" href="#dashboard"><span class="brand-mark">'+icon('shield')+'</span><span><strong>TTHC MONITOR</strong><small>GIÁM SÁT HỒ SƠ</small></span></a><nav><div class="nav-group">Điều hành</div>'+navItem('dashboard','Tổng quan','dashboard')+navItem('cases','Danh sách hồ sơ','cases')+navItem('alerts','Trung tâm cảnh báo','alerts')+'<div class="nav-group">Phạm vi & dữ liệu</div>'+navItem('sources','Nguồn dữ liệu','sources')+navItem('officers','Cán bộ','users')+navItem('sync','Lịch sử đồng bộ','sync')+'<div class="nav-group">Báo cáo</div>'+navItem('reports','Báo cáo tổng hợp','reports')+navItem('statistics','Thống kê','reports')+(can('canManageUsers')||can('canManageSettings')?'<div class="nav-group">Quản trị</div>':'')+(can('canManageUsers')?navItem('users','Người dùng','users'):'')+(can('canManageSettings')?navItem('settings','Cấu hình nghiệp vụ','settings'):'')+(can('canViewAudit')||can('canManageUsers')?navItem('audit','Nhật ký kiểm toán','audit'):'')+'</nav><div class="sidebar-footer"><span>Giám sát theo lần quan sát</span><span>Giờ Việt Nam · UTC+07:00</span></div></aside><div class="main-shell"><header class="topbar"><button class="icon-button mobile-menu" id="menu-toggle" aria-label="Mở điều hướng" aria-controls="sidebar" aria-expanded="false">'+icon('menu')+'</button><div class="topbar-title">Hệ thống giám sát <span aria-hidden="true">/</span> <strong>'+e(TITLES[state.route])+'</strong></div><div class="topbar-actions"><div class="user-info"><span class="avatar">'+e((user.displayName||user.username||'T').slice(0,1).toUpperCase())+'</span><span><strong>'+e(user.displayName||user.username)+'</strong><small>'+e(ROLE[user.role]||user.role)+'</small></span></div><button class="button ghost small" id="account-password">Đổi mật khẩu</button><button class="button ghost small" id="account-switch">Đăng xuất</button></div></header><main class="content" id="page-content" tabindex="-1">'+loading()+'</main></div></div>';
+    document.querySelector('#menu-toggle').addEventListener('click',event=>{const expanded=document.querySelector('#sidebar').classList.toggle('open');event.currentTarget.setAttribute('aria-expanded',String(expanded));});
+    document.querySelector('#account-password').addEventListener('click',()=>showPasswordChange(false));
+    document.querySelector('#account-switch').addEventListener('click',event=>runButton(event.currentTarget,logout));
+  }
+  function errorState(error) {
+    const denied=['ACCESS_DENIED','FORBIDDEN','SCOPE_DENIED','PERMISSION_DENIED'].includes(error.code);
+    return empty(denied?'Bạn chưa được cấp quyền':'Không thể tải dữ liệu',denied?'Tài khoản của bạn chưa được cấp quyền sử dụng hệ thống. Vui lòng liên hệ Quản trị viên.':error.message,'<button class="button secondary" data-refresh>Thử lại</button>')+(error.requestId?'<p class="error-request">Mã yêu cầu: '+e(error.requestId)+'</p>':'');
+  }
+  async function render() {
+    if(!state.user||state.passwordChange)return;
+    if(state.user.mustChangePassword){showPasswordChange(true);return;}
+    readRoute();const sequence=++state.request;shell();
+    const content=document.querySelector('#page-content');
+    content.dataset.routeKey=location.hash||'#dashboard';content.setAttribute('aria-busy','true');
+    try {
+      const pages={dashboard,cases,alerts,reports:()=>reports(false),statistics:()=>reports(true),sources,officers,users,audit,settings,sync};
+      const markup=await pages[state.route]();if(sequence!==state.request||!state.user)return;
+      content.innerHTML=markup+'<footer class="page-footer"><span>Dữ liệu hiển thị theo phạm vi quyền được cấp.</span><span>Hạn trả từ cổng nguồn · Giờ Việt Nam (UTC+07:00)</span></footer>';
+      content.setAttribute('aria-busy','false');bindPage();updateCountdowns();document.title=(state.id?'Chi tiết hồ sơ':TITLES[state.route])+' · TTHC Monitor';
+    } catch(error) {if(sequence!==state.request)return;if(error.code==='PASSWORD_CHANGE_REQUIRED'){state.user.mustChangePassword=true;showPasswordChange(true);return;}if(['AUTH_REQUIRED','UNAUTHENTICATED'].includes(error.code)){setSessionToken('');showLogin(error.message,error);return;}content.innerHTML=errorState(error);content.setAttribute('aria-busy','false');bindPage();}
+  }
+  function formPayload(form) {return Object.fromEntries(new FormData(form));}
+  async function runButton(button,operation,label='Đang xử lý…') {
+    const old=button.textContent;button.disabled=true;button.dataset.apiPending='true';button.textContent=label;
+    try{return await operation();}catch(error){toast(error.message,'error');return null;}finally{if(button.isConnected){button.disabled=false;delete button.dataset.apiPending;button.textContent=old;}}
+  }
+  function download(result) {
+    if(!result||typeof result.content!=='string')throw new Error('Máy chủ chưa trả tệp xuất hợp lệ.');
+    const url=URL.createObjectURL(new Blob([result.content],{type:result.mimeType||'text/csv;charset=utf-8'}));
+    const anchor=document.createElement('a');anchor.href=url;anchor.download=result.filename||'tthc-report.csv';document.body.append(anchor);anchor.click();anchor.remove();setTimeout(()=>URL.revokeObjectURL(url),5000);
+  }
+  function showAccountCredentials(result) {
+    const region=document.querySelector('#account-credentials');
+    if(!region||!result||!result.user||typeof result.defaultPassword!=='string')return;
+    region.innerHTML=panel('Thông tin cấp tài khoản','Gửi tên đăng nhập và mật khẩu mặc định cho người dùng.',notice('Người dùng phải đổi mật khẩu này khi đăng nhập. Đặt lại mật khẩu kết thúc các phiên đăng nhập và token extension cũ.')+'<div class="form-grid">'+field('Tên đăng nhập',input('issuedUsername','text',result.user.username||'','readonly autocomplete="off"'))+field('Mật khẩu mặc định',input('defaultPassword','text',result.defaultPassword,'readonly autocomplete="off" spellcheck="false"'))+'</div><div class="form-actions"><button class="button secondary" type="button" data-clear-credentials>Xóa khỏi màn hình</button></div>','',true);
+    region.querySelectorAll('input').forEach(node=>node.addEventListener('click',()=>node.select()));
+    region.querySelector('[data-clear-credentials]').addEventListener('click',()=>region.replaceChildren());
+    region.scrollIntoView({behavior:'smooth',block:'center'});
+  }
+  function bindUserForm() {
+    document.querySelector('#user-form')?.addEventListener('submit',async event=>{
+      event.preventDefault();const form=event.currentTarget,v=formPayload(form),button=form.querySelector('[type="submit"]'),errorNode=document.querySelector('#user-error');errorNode.textContent='';
+      const scope={};for(const key of ['sources','agencies','departments','officers'])scope[key]=String(v['scope_'+key]||'').split(',').map(item=>item.trim()).filter(Boolean);
+      if(button.disabled)return;
+      const payload={username:v.username,displayName:v.displayName,role:v.role,status:v.status,scope};if(form.dataset.userId)payload.id=form.dataset.userId;
+      await runButton(button,async()=>{try{const result=await rpc(form.dataset.userId?'users.update':'users.create',payload);toast(form.dataset.userId?'Đã lưu tài khoản.':'Đã cấp tài khoản.');await render();if(result.defaultPassword)showAccountCredentials(result);}catch(error){errorNode.textContent=error.message;throw error;}});
+    });
+    document.querySelector('[data-cancel-user]')?.addEventListener('click',()=>{document.querySelector('#user-form-region').innerHTML=userForm(null);bindUserForm();});
+  }
+  function bindPage() {
+    document.querySelectorAll('[data-refresh]').forEach(button=>button.addEventListener('click',render));
+    document.querySelector('#filter-form')?.addEventListener('submit',event=>{event.preventDefault();const params={};for(const key of ['agencyKey','departmentKey','officerKey','procedureKey','bucket'])if(state.filters[key])params[key]=state.filters[key];for(const [key,value]of Object.entries(formPayload(event.currentTarget)))if(String(value).trim())params[key]=String(value).trim();navigate(state.route,params);});
+    document.querySelector('[data-clear-filters]')?.addEventListener('click',()=>navigate(state.route));
+    document.querySelectorAll('[data-page]').forEach(button=>button.addEventListener('click',()=>navigate(state.route,{...state.filters,page:button.dataset.page})));
+    document.querySelectorAll('[data-ack]').forEach(button=>button.addEventListener('click',()=>runButton(button,async()=>{await rpc('alerts.acknowledge',{id:button.dataset.ack});toast('Đã xác nhận tiếp nhận cảnh báo.');await render();})));
+    document.querySelectorAll('[data-toggle-source]').forEach(button=>button.addEventListener('click',()=>runButton(button,async()=>{await rpc('sources.update',{id:button.dataset.toggleSource,enabled:button.dataset.enabled!=='true'});toast('Đã cập nhật trạng thái nguồn.');await render();})));
+    document.querySelectorAll('[data-export]').forEach(button=>button.addEventListener('click',()=>runButton(button,async()=>{const result=await rpc('reports.export',{...state.filters,type:button.dataset.export});download(result);toast('Đã xuất tệp CSV trong phạm vi được cấp.');},'Đang tạo tệp…')));
+    document.querySelectorAll('[data-edit-user]').forEach(button=>button.addEventListener('click',()=>{const user=array(state.result&&state.result.items).find(item=>item.id===button.dataset.editUser);if(!user)return;const region=document.querySelector('#user-form-region');region.innerHTML=userForm(user);bindUserForm();region.scrollIntoView({behavior:'smooth',block:'center'});region.querySelector('input')?.focus();}));
+    document.querySelectorAll('[data-toggle-user]').forEach(button=>button.addEventListener('click',()=>runButton(button,async()=>{const user=array(state.result&&state.result.items).find(item=>item.id===button.dataset.toggleUser);if(!user)throw new Error('Không tìm thấy người dùng. Hãy tải lại danh sách.');await rpc('users.update',{id:user.id,displayName:user.displayName,role:user.role,scope:user.scope,status:user.status==='ACTIVE'?'DISABLED':'ACTIVE'});toast('Đã cập nhật trạng thái người dùng.');await render();})));
+    document.querySelectorAll('[data-reset-password]').forEach(button=>button.addEventListener('click',()=>runButton(button,async()=>{const result=await rpc('users.resetPassword',{id:button.dataset.resetPassword});toast('Đã đặt lại mật khẩu. Người dùng cần đăng nhập lại và đổi mật khẩu.');await render();showAccountCredentials(result);})));
+    bindUserForm();
+    document.querySelector('#settings-form')?.addEventListener('submit',event=>{
+      event.preventDefault();const form=event.currentTarget,v=formPayload(form),button=form.querySelector('[type="submit"]');
+      runButton(button,async()=>{try{const result=await rpc('settings.update',{warningSeconds:Math.round(Number(v.warningHours)*3600),staleSeconds:Math.round(Number(v.staleHours)*3600)});state.settings=result;toast('Đã lưu cấu hình cảnh báo.');await render();}catch(error){document.querySelector('#settings-error').textContent=error.message;throw error;}});
+    });
+    document.querySelector('#token-form')?.addEventListener('submit',event=>{
+      event.preventDefault();const form=event.currentTarget,v=formPayload(form),source=state.sources.find(item=>sourceId(item)===v.sourceSystem);
+      runButton(form.querySelector('[type="submit"]'),async()=>{
+        if(!source)throw new Error('Chọn một nguồn được cấp quyền.');
+        const hostname=source.hostname||source.host||new URL(source.url||source.baseUrl).hostname;
+        const token=await rpc('extension.tokens.create',{sourceSystem:v.sourceSystem,hostname});
+        document.querySelector('#token-result').innerHTML=notice('Token chỉ hiển thị trong phiên này; hết hạn lúc '+date(token.expiresAt)+'. Dán token vào phần cài đặt extension.')+field('Token extension','<textarea class="token-secret" readonly rows="3" aria-label="Token extension">'+e(token.token)+'</textarea>')+(safeUrl(state.config.webAppUrl)?field('API Web App',input('endpoint','url',state.config.webAppUrl,'readonly')):'')+'<div class="form-actions"><button class="button secondary" type="button" data-clear-token>Xóa khỏi màn hình</button>'+(token.id?'<button class="button danger" type="button" data-revoke-token="'+e(token.id)+'">Thu hồi token</button>':'')+'</div>';
+        document.querySelector('[data-clear-token]').addEventListener('click',()=>{document.querySelector('#token-result').replaceChildren();});
+        document.querySelector('[data-revoke-token]')?.addEventListener('click',event=>runButton(event.currentTarget,async()=>{await rpc('extension.tokens.revoke',{id:event.currentTarget.dataset.revokeToken});document.querySelector('#token-result').replaceChildren();toast('Đã thu hồi token extension.');}));
+      });
+    });
+  }
+  function setSessionToken(value) {
+    state.sessionToken=value||'';
+    try {if(value)sessionStorage.setItem(SESSION_KEY,value);else sessionStorage.removeItem(SESSION_KEY);} catch (_) {}
+  }
+  async function logout() {
+    await rpc('auth.logout');setSessionToken('');showLogin('Bạn đã đăng xuất. Sử dụng tài khoản được Quản trị viên cấp để tiếp tục.');
+  }
+  function loginLayout(content) {
+    return '<div class="login-page"><section class="login-intro"><div class="brand"><span class="brand-mark">'+icon('shield')+'</span><span><strong>TTHC MONITOR</strong><small>GIÁM SÁT HỒ SƠ</small></span></div><h1>Theo dõi tiến độ.<br>Chủ động điều hành.</h1><p>Giám sát và cảnh báo hạn trả hồ sơ thủ tục hành chính từ các nguồn Bộ, ngành và địa phương.</p><ul class="login-points"><li>'+icon('sources')+'Tổng hợp nhiều nguồn được phép</li><li>'+icon('alerts')+'Cảnh báo theo ngày hẹn trả</li><li>'+icon('shield')+'Truy cập theo quyền được cấp</li></ul><small>Giờ Việt Nam · UTC+07:00</small></section><main class="login-form-area" id="page-content" tabindex="-1"><div class="login-form">'+content+'</div></main></div>';
+  }
+  function loginSetupHtml() {
+    if(state.config.configured!==false)return '';
+    const issues=array(state.config.setupIssues),names=issues.map(issue=>issue.property).filter(Boolean);
+    return '<details class="login-setup"><summary>Hướng dẫn dành cho quản trị viên</summary>'+(names.length?'<p>Cần kiểm tra: <strong>'+e(names.join(', '))+'</strong>.</p>':'')+'<ol><li>Mở dự án trong Apps Script Editor → Project Settings → Script Properties; hoàn tất cấu hình lưu trữ và khóa mã hóa.</li><li>Đặt <strong>DEFAULT_USER_PASSWORD</strong> cho mật khẩu mặc định, <strong>BOOTSTRAP_USERNAME</strong> cho tên tài khoản quản trị ban đầu (mặc định: admin) và <strong>BOOTSTRAP_PASSWORD</strong> cho mật khẩu quản trị ban đầu.</li><li>Chạy <strong>setupTthcMonitor_</strong>, sau đó <strong>bootstrapAdmin_</strong> để cấp tài khoản quản trị. Bấm <strong>Kiểm tra kết nối lại</strong>.</li></ol></details>';
+  }
+  function showLogin(message='',error=null) {
+    ++state.request;++state.loginAttempt;state.user=null;state.permissions={};state.sources=[];state.settings={};state.result=null;state.passwordChange=false;
+    document.title='Đăng nhập · TTHC Monitor';
+    app.innerHTML=loginLayout('<div class="eyebrow">CỔNG ĐIỀU HÀNH</div><h1>Đăng nhập</h1><p>Sử dụng tên đăng nhập và mật khẩu được Quản trị viên cấp.</p>'+(message?'<div class="notice '+(error?'error':'warning')+'" role="alert"><p>'+e(message)+'</p></div>':'')+'<form id="login-form">'+field('Tên đăng nhập',input('username','text','','required minlength="3" maxlength="64" autocomplete="username" autocapitalize="none" spellcheck="false"'))+field('Mật khẩu',input('password','password','','required maxlength="128" autocomplete="current-password"'))+'<p id="login-error" class="error-inline" role="alert"></p><button class="button" type="submit" id="account-login" aria-describedby="login-help" '+(state.config.configured===false?'disabled':'')+'>Đăng nhập</button></form><button class="button secondary" type="button" id="retry-session">Kiểm tra kết nối lại</button>'+loginSetupHtml()+'<p class="login-footnote" id="login-help">Quản trị viên cấp tài khoản và phạm vi được xem. Khi quên mật khẩu, liên hệ Quản trị viên để được đặt lại.<br><br>Người dùng tự đăng nhập hợp lệ tại các cổng nguồn; extension chỉ đọc dữ liệu được phép hiển thị.</p>'+(error&&error.requestId?'<p class="error-request">Mã yêu cầu: '+e(error.requestId)+'</p>':''));
+    document.querySelector('#login-form').addEventListener('submit',async event=>{
+      event.preventDefault();const form=event.currentTarget,button=form.querySelector('[type="submit"]'),retry=document.querySelector('#retry-session'),errorNode=document.querySelector('#login-error');
+      if(button.disabled||state.config.configured===false)return;
+      const attempt=++state.loginAttempt,values=formPayload(form);errorNode.textContent='';retry.disabled=true;
+      await runButton(button,async()=>{
+        try {
+          const result=await rpc('auth.login',{username:values.username.trim(),password:values.password});
+          if(attempt!==state.loginAttempt)return;
+          if(!result||!result.sessionToken)throw new Error('Máy chủ chưa tạo được phiên đăng nhập. Vui lòng thử lại.');
+          form.elements.password.value='';setSessionToken(result.sessionToken);await bootstrap();
+        } catch(error) {
+          if(attempt!==state.loginAttempt)return;
+          form.elements.password.value='';errorNode.textContent=error.message;form.elements.password.focus();throw error;
+        } finally {if(retry.isConnected)retry.disabled=false;}
+      },'Đang đăng nhập…');
+    });
+    document.querySelector('#retry-session').addEventListener('click',bootstrap);
+  }
+  function applySession(session) {
+    if(!session||!session.user||session.user.status!=='ACTIVE')throw Object.assign(new Error('Tài khoản của bạn chưa được cấp quyền sử dụng hệ thống. Vui lòng liên hệ Quản trị viên.'),{code:'ACCESS_DENIED'});
+    if(session.sessionToken)setSessionToken(session.sessionToken);
+    state.user=session.user;state.permissions=session.permissions||{};state.sessionTime=session.serverTime;state.clockOffset=session.serverTime?new Date(session.serverTime).getTime()-Date.now():0;
+  }
+  function showPasswordChange(required=Boolean(state.user&&state.user.mustChangePassword)) {
+    if(!state.user)return;
+    ++state.request;state.passwordChange=true;state.result=null;
+    document.title='Đổi mật khẩu · TTHC Monitor';
+    app.innerHTML=loginLayout('<div class="eyebrow">'+e(state.user.username||state.user.displayName)+'</div><h1>'+(required?'Đổi mật khẩu lần đầu':'Đổi mật khẩu')+'</h1><p>'+(required?'Đặt mật khẩu riêng để tiếp tục sử dụng hệ thống.':'Cập nhật mật khẩu cho tài khoản của bạn.')+'</p><form id="password-form">'+field('Mật khẩu hiện tại',input('currentPassword','password','','required maxlength="128" autocomplete="current-password"'))+field('Mật khẩu mới',input('newPassword','password','','required minlength="10" maxlength="128" autocomplete="new-password"'),'10–128 ký tự, khác mật khẩu hiện tại và mật khẩu mặc định.')+field('Nhập lại mật khẩu mới',input('confirmPassword','password','','required minlength="10" maxlength="128" autocomplete="new-password"'))+'<p id="password-error" class="error-inline" role="alert"></p><button class="button" type="submit">Lưu mật khẩu</button></form>'+(!required?'<button class="button secondary" type="button" id="cancel-password-change">Hủy</button>':'')+'<button class="button ghost" type="button" id="password-logout">Đăng xuất</button>');
+    document.querySelector('#password-form').addEventListener('submit',async event=>{
+      event.preventDefault();const form=event.currentTarget,button=form.querySelector('[type="submit"]'),values=formPayload(form),errorNode=document.querySelector('#password-error'),request=state.request;
+      if(button.disabled)return;
+      errorNode.textContent='';
+      if(values.newPassword!==values.confirmPassword){errorNode.textContent='Mật khẩu nhập lại chưa khớp.';form.elements.confirmPassword.focus();return;}
+      const controls=[document.querySelector('#cancel-password-change'),document.querySelector('#password-logout')].filter(Boolean);controls.forEach(node=>{node.disabled=true;});
+      await runButton(button,async()=>{
+        try {
+          const result=await rpc('auth.changePassword',{currentPassword:values.currentPassword,newPassword:values.newPassword});
+          if(request!==state.request)return;
+          applySession(result);form.reset();state.passwordChange=false;toast('Đã đổi mật khẩu.');await bootstrap();
+        } catch(error) {
+          if(request!==state.request)return;
+          if(['AUTH_REQUIRED','UNAUTHENTICATED'].includes(error.code)){setSessionToken('');showLogin(error.message,error);return;}
+          errorNode.textContent=error.message;form.elements.currentPassword.value='';form.elements.currentPassword.focus();throw error;
+        } finally {controls.forEach(node=>{if(node.isConnected)node.disabled=false;});}
+      },'Đang lưu mật khẩu…');
+    });
+    document.querySelector('#cancel-password-change')?.addEventListener('click',()=>{state.passwordChange=false;bootstrap();});
+    document.querySelector('#password-logout').addEventListener('click',event=>runButton(event.currentTarget,logout));
+    document.querySelector('[name="currentPassword"]').focus();
+  }
+  async function bootstrap() {
+    const sequence=++state.request;state.passwordChange=false;app.innerHTML='<main id="page-content">'+loading('Đang kiểm tra phiên đăng nhập…')+'</main>';
+    try {
+      const config=await rpc('auth.config');if(sequence!==state.request)return;state.config=config;
+      if(!state.sessionToken){showLogin(state.config.configured===false?'Quản trị viên chưa hoàn tất cấu hình tài khoản.':'');return;}
+      const session=await rpc('auth.session');if(sequence!==state.request)return;applySession(session);
+      if(state.user.mustChangePassword||session.mustChangePassword){state.user.mustChangePassword=true;showPasswordChange(true);return;}
+      const results=await Promise.allSettled([rpc('sources.list'),rpc('settings.get')]);if(sequence!==state.request)return;
+      if(results[0].status==='fulfilled')state.sources=array(results[0].value.items);else throw results[0].reason;
+      if(results[1].status==='fulfilled')state.settings=results[1].value;else throw results[1].reason;
+      await render();
+    } catch(error) {
+      if(sequence!==state.request)return;
+      if(error.code==='PASSWORD_CHANGE_REQUIRED'&&state.user){state.user.mustChangePassword=true;showPasswordChange(true);return;}
+      const denied=['ACCESS_DENIED','FORBIDDEN','UNAUTHENTICATED','AUTH_REQUIRED','PERMISSION_DENIED'].includes(error.code);
+      if(denied)setSessionToken('');
+      showLogin(error.message,error);
+    }
+  }
+  function updateCountdowns() {document.querySelectorAll('[data-countdown]').forEach(node=>{node.textContent=remaining(node.dataset.countdown);});}
+  window.addEventListener('hashchange',()=>{if(state.user)render();});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'){document.querySelector('#sidebar')?.classList.remove('open');document.querySelector('#menu-toggle')?.setAttribute('aria-expanded','false');}});
+  setInterval(updateCountdowns,30000);
+  bootstrap();
+})();
+</script>

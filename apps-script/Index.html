@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#13273d">
+  <meta name="description" content="Giám sát và cảnh báo tiến độ hồ sơ thủ tục hành chính theo phạm vi được cấp.">
+  <title>TTHC Monitor · Giám sát hồ sơ</title>
+  <?!= TTHC.View.include('Styles'); ?>
+</head>
+<body>
+  <a class="skip-link" href="#page-content">Đến nội dung chính</a>
+  <div id="app"><div class="initial-loading" role="status"><span class="spinner" aria-hidden="true"></span>Đang kiểm tra phiên đăng nhập…</div></div>
+  <div id="toast-region" class="toast-region" role="status" aria-live="polite"></div>
+  <?!= TTHC.View.include('Scripts'); ?>
+</body>
+</html>

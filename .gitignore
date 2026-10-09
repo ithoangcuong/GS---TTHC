@@ -1,0 +1,12 @@
+node_modules/
+.npm-cache/
+dist/
+data/
+.env
+secrets/
+.env.google
+*.sqlite*
+*.log
+coverage/
+.clasp.json
+.clasprc.json
