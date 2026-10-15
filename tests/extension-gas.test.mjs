@@ -181,6 +181,37 @@ test('worker sends the active MOC tab hostname for canonical and legacy token bi
       globalThis.fetch = async (url, options) => { sent = JSON.parse(options.body);
         return { ok: true, url: endpoint, json: async () => ({ ok: true, data: result() }) }; };
       await import(`../extension/background/service-worker.mjs?synthetic-moc-host-${hostname}`);
+      delete session.collectorToken;
+      const preview = await new Promise(resolve => {
+        listener({ type: 'PREVIEW_SOURCE', tabId: 7 }, { id: chrome.runtime.id, url: chrome.runtime.getURL('popup/index.html') }, resolve);
+      });
+      assert.equal(preview.ok, true, preview.error);
+      assert.equal(preview.valid, 1);
+      assert.equal(preview.records[0].sourceSystem, 'MOC');
+      assert.equal(session.syncJob, undefined);
+      assert.equal(sent, undefined, 'preview must not contact central API');
+      const originalConfig = local.configurations.MOC;
+      const enableWithoutConfirmation = await new Promise(resolve => {
+        listener({ type: 'ENABLE_MOC_PROFILE', tabId: 7 }, { id: chrome.runtime.id, url: chrome.runtime.getURL('popup/index.html') }, resolve);
+      });
+      assert.equal(enableWithoutConfirmation.ok, false);
+      assert.equal(local.configurations.MOC, originalConfig);
+      const originalSend = chrome.tabs.sendMessage;
+      chrome.tabs.sendMessage = async () => ({ ok: true, sourceSystem: 'MOC', records: [], errors: [], total: 0 });
+      const enableEmpty = await new Promise(resolve => {
+        listener({ type: 'ENABLE_MOC_PROFILE', tabId: 7, confirmed: true }, { id: chrome.runtime.id, url: chrome.runtime.getURL('popup/index.html') }, resolve);
+      });
+      assert.equal(enableEmpty.ok, false);
+      assert.equal(local.configurations.MOC, originalConfig, 'failed recognition must not replace saved configuration');
+      chrome.tabs.sendMessage = originalSend;
+      const enable = await new Promise(resolve => {
+        listener({ type: 'ENABLE_MOC_PROFILE', tabId: 7, confirmed: true }, { id: chrome.runtime.id, url: chrome.runtime.getURL('popup/index.html') }, resolve);
+      });
+      assert.equal(enable.ok, true, enable.error);
+      assert.equal(local.configurations.MOC.profile, 'MOC_SEARCH_V1');
+      assert.equal(local.configurations.MOC.listUrl, `https://${hostname}/vi/dossier/search`);
+      assert.equal(sent, undefined, 'activation must not sync');
+      session.collectorToken = token;
       const response = await new Promise(resolve => {
         assert.equal(listener({ type: 'START_SYNC', tabId: 7 }, { id: chrome.runtime.id, url: chrome.runtime.getURL('popup/index.html') }, resolve), true);
       });
@@ -230,7 +261,8 @@ test('default manifest restricts requests and read scripts to twelve exact hosts
   const manifest = JSON.parse(await readFile(new URL('../extension/manifest.json', import.meta.url), 'utf8'));
   assert.deepEqual(manifest.content_scripts[0].matches, SOURCES.flatMap(source => source.supportedHosts.map(hostname => `https://${hostname}/*`)));
   assert.deepEqual(manifest.host_permissions, [...manifest.content_scripts[0].matches,
-    'https://script.google.com/macros/s/*', 'https://script.googleusercontent.com/*']);
+    'https://script.google.com/macros/s/*', 'https://script.googleusercontent.com/*',
+    'https://n-aqvzizvfpztqprh75rg5zq5yehraj4xv4vezeci-0lu-script.googleusercontent.com/*']);
   assert.equal(manifest.optional_host_permissions, undefined);
   assert.match(manifest.content_security_policy.extension_pages,
     /connect-src https:\/\/script\.google\.com https:\/\/script\.googleusercontent\.com;/);

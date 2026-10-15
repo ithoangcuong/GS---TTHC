@@ -64,6 +64,6 @@ Role: SUPER_ADMIN, ADMIN, LEADER, MANAGER, OFFICER, VIEWER. Scope: sources, agen
 
 Extension cài bằng Load unpacked sau npm.cmd run extension:build. Người dùng tự đăng nhập portal hợp lệ, mở dashboard bằng tài khoản admin cấp, tạo collector token cho nguồn/hostname rồi nhập URL /exec và token vào extension.
 
-**Cả 11 adapter đang WAITING_FOR_SAMPLE**: cần DOM/JSON thật đã khử PII/credential và mapping có bằng chứng. Xem [docs/ADAPTERS.md](docs/ADAPTERS.md) và [extension/README.md](extension/README.md).
+**MOC đã có bộ đọc riêng cho trang Tra cứu hồ sơ toàn cơ quan**, dựa trên ảnh người dùng cung cấp và cấu trúc giao diện công khai. Trong popup, xác nhận đã đăng nhập rồi chọn **Nhận diện và đọc thử bảng Bộ Xây dựng**; không cần nhập selector. Trạng thái nghiệm thu cổng thật của 11 nguồn vẫn WAITING_FOR_SAMPLE cho đến khi kiểm chứng phiên thực tế. Xem [docs/MOC_SYNC.md](docs/MOC_SYNC.md) và [docs/ADAPTERS.md](docs/ADAPTERS.md).
 
 Không cần VPS, domain riêng, Cloud KMS, Vercel hoặc billing cho bản Apps Script. Quota/dung lượng Google vẫn áp dụng, không tự nâng gói. Kiến trúc/schema/RPC: [docs/APPS_SCRIPT.md](docs/APPS_SCRIPT.md).

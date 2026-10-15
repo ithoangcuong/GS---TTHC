@@ -1,0 +1,25 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { collectionDate, readMocCollectionContext } from '../extension/shared/collection-context.mjs';
+test('MOC reads exact date controls with open bounds, rejects impossible or reversed dates', () => {
+  assert.equal(collectionDate('01/10/2026'), '2026-10-01');
+  assert.equal(collectionDate('14/7/2026'), '2026-07-14');
+  assert.equal(collectionDate('1/7/2026'), '2026-07-01');
+  assert.equal(collectionDate('1/07/2026'), '2026-07-01');
+  assert.equal(collectionDate('2026-07-14'), '2026-07-14');
+  assert.throws(() => collectionDate('31/4/2026'));
+  assert.throws(() => collectionDate('29/2/2026'));
+  assert.equal(collectionDate(''), null);
+  assert.throws(() => collectionDate('31/02/2026'));
+  const root = { querySelectorAll: selector => [{ value: selector.includes('From') ? '01/10/2026' : '12/10/2026' }] };
+  const result = readMocCollectionContext(root, '2026-10-12T00:00:00Z');
+  assert.equal(result.submittedFrom, '2026-10-01'); assert.equal(result.submittedTo, '2026-10-12');
+  root.querySelectorAll = selector => [{ value: selector.includes('From') ? '14/7/2026' : '12/10/2026' }];
+  assert.equal(readMocCollectionContext(root, result.capturedAt).submittedFrom, '2026-07-14');
+  root.querySelectorAll = selector => [{ value: selector.includes('From') ? '31/4/2026' : '12/10/2026' }];
+  assert.throws(() => readMocCollectionContext(root, result.capturedAt), /Ngày nộp từ ngày/);
+  root.querySelectorAll = selector => [{ value: selector.includes('From') ? '13/10/2026' : '12/10/2026' }];
+  assert.throws(() => readMocCollectionContext(root, result.capturedAt));
+  root.querySelectorAll = () => [];
+  assert.throws(() => readMocCollectionContext(root, result.capturedAt));
+});

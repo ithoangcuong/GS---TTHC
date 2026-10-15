@@ -2,6 +2,16 @@
 
 Đường dữ liệu là: **trang hồ sơ Bộ Xây dựng → extension trên máy của bạn → Apps Script → Google Sheets → Dashboard hiện tại**. Bạn tự đăng nhập cổng Bộ Xây dựng, mở danh sách hồ sơ và bấm đồng bộ từng trang. Dashboard không tự đăng nhập hoặc tải toàn bộ hồ sơ từ cổng nguồn.
 
+## Cách dùng nhanh từ phiên bản 0.5.0
+
+Từ **0.5.1**, popup hiển thị từng bước kết nối/đọc/gửi, lưu lỗi chuẩn bị trong phiên để xem lại khi mở popup, và báo rõ số hồ sơ mới/cập nhật/lỗi sau phản hồi từ máy chủ. Đọc thử không phải kết quả lưu. Sau thông báo **Đã đồng bộ**, bấm **Xem hồ sơ đã lưu trên Dashboard** để tải lại danh sách nguồn vừa đồng bộ và bỏ bộ lọc cũ. Dashboard đang mở trước đó không tự tải dữ liệu mới chỉ bằng bộ đếm thời gian.
+
+Không cần nhập URL Apps Script hoặc sao chép collector token. Tải lại extension, đăng nhập Dashboard TTHC MONITOR bằng tài khoản của bạn và giữ tab đó mở. Trở về tab Bộ Xây dựng, mở extension và bấm **Đọc và ghi lên hệ thống**. Nếu chưa mở Dashboard, nút này mở Dashboard để bạn đăng nhập; quay lại portal và bấm ghi lần nữa.
+
+Extension dùng địa chỉ triển khai của dự án, yêu cầu Dashboard cấp token đúng nguồn/hostname bằng phiên đăng nhập hiện có, rồi lưu token riêng trong phiên extension. Mật khẩu và session Dashboard không được đưa sang extension. Tài khoản vẫn phải có quyền đồng bộ nguồn; yêu cầu đổi mật khẩu mặc định vẫn được giữ. Quyền token hết hạn sau một giờ được cấp lại khi bắt đầu lần ghi tiếp theo. Mỗi lần chỉ ghi trang portal đang hiển thị.
+
+Các bước tạo/dán token ở mục 2–3 bên dưới chỉ dành cho kết nối thủ công hoặc hệ thống khác trong **Kết nối nâng cao**. Kết nối tự động dùng hostname iframe Dashboard chính xác đã kiểm tra ngày 11/10/2026; nếu Google thay hostname này, cần cập nhật extension, không tự mở rộng quyền sang các ứng dụng Google khác.
+
 | Thành phần | Địa chỉ |
 | --- | --- |
 | Danh sách hồ sơ Bộ Xây dựng | [motcuabxd.moc.gov.vn/vi/dossier/search](https://motcuabxd.moc.gov.vn/vi/dossier/search) |
@@ -11,7 +21,11 @@
 
 ## 1. Cài hoặc tải lại extension
 
-Nếu dùng thư mục dự án hiện tại, mở PowerShell tại `D:\CODE\GS-TTHC` và chạy:
+Bản **0.4.2** nhận bảng native/Angular Material theo cấu trúc ngữ nghĩa trong `app-list-search`, không phụ thuộc lớp bao `.searchtbl-allAgency`. Các mã `mat-column-*`/`cdk-column-*` được đối chiếu từ module công khai giúp đọc đúng khi nhãn có biểu tượng sắp xếp hoặc vị trí ô thay đổi. Nếu chưa nhận diện được, thông báo nêu số bảng và các cột giám sát còn thiếu (không chứa nội dung hồ sơ); gửi lại nguyên văn thông báo này để kiểm tra bố cục.
+
+Bản **0.4.1** tự nạp lại bộ đọc nếu tab chưa có content script (lỗi `Could not establish connection. Receiving end does not exist.`). Sau khi cập nhật, bấm **Tải lại** extension một lần để nhận bản mới và quyền `scripting`. Quyền này chỉ dùng để nạp file collector đi kèm vào tab portal được hỗ trợ. Nếu trình duyệt chặn quyền truy cập trang, cấp quyền cho cổng đang mở rồi tải lại tab.
+
+Nếu dùng thư mục dự án hiện tại, mở PowerShell tại `D:\PHUONG\GS---TTHC-main` và chạy:
 
 ```powershell
 npm.cmd run extension:build
@@ -19,7 +33,7 @@ npm.cmd run extension:build
 
 1. Mở `chrome://extensions` trong Chrome hoặc `edge://extensions` trong Edge.
 2. Bật **Developer mode / Chế độ dành cho nhà phát triển**.
-3. Bấm **Load unpacked / Tải tiện ích đã giải nén**, chọn thư mục `D:\CODE\GS-TTHC\extension` chứa `manifest.json`.
+3. Bấm **Load unpacked / Tải tiện ích đã giải nén**, chọn thư mục `D:\PHUONG\GS---TTHC-main\extension` chứa `manifest.json`.
 4. Ghim **TTHC Monitor Collector** lên thanh công cụ để dễ mở.
 
 Nếu đã cài trước đó, bấm **Reload / Tải lại** trên thẻ extension thay cho việc cài lại. Sau đó tải lại tab Bộ Xây dựng. Bản mới nhận `motcuabxd.moc.gov.vn`; tên miền cũ `motcua.moc.gov.vn` vẫn được giữ để tương thích.
@@ -45,11 +59,19 @@ Token chỉ được giữ trong phiên trình duyệt. Khi đóng trình duyệ
 
 ## 4. Kiểm chứng bộ đọc trước lần đồng bộ đầu tiên
 
-Hiện MOC vẫn ở trạng thái **WAITING_FOR_SAMPLE**. URL và tên miền đã được xác định, nhưng chưa có bảng hồ sơ từ một phiên đăng nhập thực tế để nghiệm thu. Kiểm tra công khai ngày 09/10/2026 dừng ở bước đăng nhập VNeID; template công khai chưa đủ để xác nhận dữ liệu sẽ đọc được trên tài khoản của bạn.
+Extension **0.4.0** có bộ đọc riêng `MOC_SEARCH_V1` cho bố cục trong ảnh người dùng cung cấp ngày 11/10/2026, đối chiếu với `ListSearchComponent` công khai của cổng. Bộ đọc hỗ trợ `mat-table`/`mat-cell` của Angular Material, nhận diện tiêu đề cột, tách ngày nộp/ngày tiếp nhận/ngày hẹn trả và cơ quan/cán bộ trong ô gộp. Không đọc cột Người nộp hoặc lấy hạn trả từ countdown.
 
-Với bộ đọc TABLE hiện tại, người tích hợp cần kiểm tra cấu trúc bảng, nhãn cột và dấu hiệu đăng nhập trên phiên được phép, rồi nhập cấu hình trong **Cấu hình adapter đã kiểm chứng**. Xem [ADAPTERS.md](ADAPTERS.md) để biết cấu trúc cấu hình. Không đặt `verified=true` khi chưa kiểm tra trang thực tế.
+1. Tải lại extension ở `chrome://extensions` / `edge://extensions`, sau đó tải lại tab Bộ Xây dựng.
+2. Đăng nhập và mở danh sách **Tra cứu hồ sơ toàn cơ quan**. Chờ bảng tải xong, có ít nhất một hồ sơ.
+3. Mở popup extension. Đánh dấu **Tôi đã đăng nhập và đang xem bảng hồ sơ được phép truy cập**.
+4. Bấm **Nhận diện và đọc thử bảng Bộ Xây dựng**. Không cần nhập selector hoặc token ở bước này.
+5. Đối chiếu mã hồ sơ, ngày hẹn và trạng thái trong kết quả. Chỉ khi có dòng hợp lệ, extension mới lưu bộ đọc và mở nút đọc thử thông thường. Hồ sơ lỗi được liệt kê riêng, chưa gửi dữ liệu lên hệ thống.
 
-Nếu extension báo **Cần DOM, URL danh sách và dấu hiệu đăng nhập đã kiểm chứng**, kết nối đã được chuẩn bị nhưng bộ đọc chưa sẵn sàng. Cần hoàn thiện bước kiểm chứng này trước khi bấm đồng bộ; lưu URL và token riêng lẻ chưa nhập hồ sơ vào hệ thống.
+Quay lại tab danh sách, mở extension và bấm **Đọc thử dữ liệu** để xem số dòng hợp lệ, lỗi và tối đa 10 hồ sơ. Bước này không cần token và không gửi hồ sơ lên hệ thống. Chỉ đồng bộ sau khi kiểm tra mã hồ sơ, ngày hẹn và trạng thái đọc được.
+
+Nếu vẫn thấy thông báo **Cần DOM, URL danh sách và dấu hiệu đăng nhập đã kiểm chứng**, kiểm tra đã tải lại đúng extension phiên bản 0.4.0 và tab portal. Nếu báo không nhận diện bảng, kiểm tra đúng URL, tiêu đề trang và các cột đang hiển thị; không cần gửi mật khẩu/cookie. Với cấu hình TABLE riêng đã lưu trước đó, có thể nhập profile sau qua JSON nâng cao khi đã xác nhận đúng phiên: `{"sourceSystem":"MOC","profile":"MOC_SEARCH_V1","confirmed":true,"listUrl":"https://motcuabxd.moc.gov.vn/vi/dossier/search"}`, rồi dùng **Đọc thử dữ liệu**.
+
+Trạng thái nghiệm thu MOC vẫn **WAITING_FOR_SAMPLE**: ảnh và mã giao diện giúp triển khai bộ đọc, nhưng kiểm thử DOM tổng hợp không thay phiên đăng nhập thật. Bộ đọc hiện yêu cầu đủ ba timestamp chính thức. Trạng thái đã đối chiếu là **Đang xử lý → PROCESSING**; trạng thái khác là UNKNOWN khi preview, backend dùng STATUS_MAPPING. Tên thủ tục kết thúc bằng dấu ba chấm bị bỏ qua để không ghi đè tên đầy đủ bằng đoạn bị cắt.
 
 ## 5. Đồng bộ và kiểm tra kết quả
 

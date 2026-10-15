@@ -6,6 +6,23 @@ import { gasRuntime } from './helpers/apps-script.mjs';
 const MODULES = ['Utils', 'Crypto', 'Passwords', 'SheetRepository', 'Settings', 'Audit', 'Permissions', 'Users', 'Sources', 'Auth', 'Router', 'Setup'];
 const ALL = { sources: ['*'], agencies: ['*'], departments: ['*'], officers: ['*'] };
 const CHANGED = 'SYNTHETIC-changed-password-2026!';
+test('bootstrap batches initialization, reads users once and rechecks revoked sessions', () => {
+  const gas = fixture();
+  gas.calls.length = 0;
+  const initial = successful(gas, 'auth.bootstrap', {}, gas.admin.sessionToken);
+  assert.equal(initial.session.user.id, gas.adminId);
+  assert.ok(initial.sources.items.length > 0);
+  assert.ok(initial.settings);
+  assert.equal(gas.calls.filter(call => call.op === 'read' && call.table === 'USERS' && call.startRow === 2).length, 1);
+  successful(gas, 'auth.logout', {}, gas.admin.sessionToken);
+  assert.equal(rpc(gas, 'auth.bootstrap', {}, gas.admin.sessionToken).error.code, 'AUTH_REQUIRED');
+  assert.deepEqual(Object.keys(successful(gas, 'auth.bootstrap')), ['config']);
+  const pending = fixture(false);
+  const restricted = successful(pending, 'auth.bootstrap', {}, pending.admin.sessionToken);
+  assert.equal(restricted.session.mustChangePassword, true);
+  assert.equal(restricted.sources, undefined);
+  assert.equal(restricted.settings, undefined);
+});
 const snapshot = gas => JSON.stringify([...gas.sheets].map(([name, sheet]) => [name, sheet.rows]));
 const rpc = (gas, action, payload = {}, token = '') => gas.plain(gas.app.Router.rpc(action, payload, token));
 function successful(gas, action, payload = {}, token = '') {

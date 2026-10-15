@@ -2,12 +2,12 @@ var TTHC = TTHC || {};
 TTHC.Router = (function () {
   'use strict';
   function controlled(callback) {
-    var requestId = TTHC.Utils.id();
-    try { return { ok: true, data: callback() }; }
+    var requestId = TTHC.Utils.id(), started = Date.now(), timing = {};
+    try { var data = TTHC.Repo.withRequest(callback, timing); timing.serverMs = Date.now() - started; return { ok: true, data: data, timing: timing }; }
     catch (error) {
       var code = typeof error.code === 'string' && /^[A-Z_]{2,60}$/.test(error.code) ? error.code : 'INTERNAL_ERROR';
       TTHC.Utils.log('ERROR', 'REQUEST_FAILED', { code: code, requestId: requestId });
-      return { ok: false, error: { code: code, message: code === 'INTERNAL_ERROR' ? 'Không thể xử lý yêu cầu. Vui lòng thử lại hoặc liên hệ quản trị viên.' : String(error.message || 'Yêu cầu không hợp lệ.').slice(0, 500), requestId: requestId } };
+      return { ok: false, error: { code: code, message: code === 'INTERNAL_ERROR' ? 'Không thể xử lý yêu cầu. Vui lòng thử lại hoặc liên hệ quản trị viên.' : String(error.message || 'Yêu cầu không hợp lệ.').slice(0, 500), requestId: requestId }, timing: { serverMs: Date.now() - started } };
     }
   }
   function auditList(actor, query) {
@@ -37,8 +37,21 @@ TTHC.Router = (function () {
       if (action === 'auth.changePassword') return TTHC.Auth.changePassword(payload, sessionToken);
       if (action === 'auth.logout') return TTHC.Auth.logout(sessionToken);
       if (action === 'auth.session') return TTHC.Auth.session(sessionToken);
+      if (action === 'auth.recovery.request') return TTHC.Recovery.request(payload);
+      if (action === 'auth.recovery.verify') return TTHC.Recovery.verify(payload);
+      if (action === 'auth.recovery.reset') return TTHC.Recovery.reset(payload);
+      if (action === 'auth.bootstrap') {
+        var config = TTHC.Auth.config();
+        if (!sessionToken || !config.configured) return { config: config };
+        var session = TTHC.Auth.session(sessionToken);
+        if (session.mustChangePassword) return { config: config, session: session };
+        var initialActor = TTHC.Auth.authenticate(sessionToken);
+        return { config: config, session: session, sources: TTHC.Sources.list(initialActor), settings: TTHC.Settings.get() };
+      }
       var actor = TTHC.Auth.authenticate(sessionToken);
       switch (action) {
+        case 'auth.recovery.status': return TTHC.Recovery.status(actor);
+        case 'auth.recovery.enroll': return TTHC.Recovery.enroll(actor, payload);
         case 'sources.list': return TTHC.Sources.list(actor);
         case 'sources.update': return TTHC.Sources.update(actor, payload);
         case 'sync.list': return TTHC.Sources.syncList(actor, payload);

@@ -22,6 +22,14 @@ MOC đã xác định URL danh sách là `https://motcuabxd.moc.gov.vn/vi/dossie
 
 ## Interface và điều kiện thu thập
 
+### Bộ đọc MOC theo bố cục ngày 11/10/2026
+
+`MOC_SEARCH_V1` trong `moc.mjs`/`moc-profile.mjs` là bộ đọc riêng cho ảnh người dùng đã cung cấp, đối chiếu với [module giao diện công khai](https://motcuabxd.moc.gov.vn/vi/pages-search-search-module.6d9646cf4e6d0fb2c64a.js). Module xác định `app-list-search`, tiêu đề `h2`, vùng `.searchtbl-allAgency`, bảng Angular Material và các ô `mat-cell`. Bộ đọc chọn cột theo nhãn NFC, không theo vị trí cố định, chỉ đọc năm cột giám sát. Cột Người nộp, thao tác và checkbox không được đọc nội dung.
+
+Người dùng xác nhận phiên trong popup, chọn **Nhận diện và đọc thử bảng Bộ Xây dựng**. Worker thử đọc rồi mới lưu profile khi có ít nhất một dòng hợp lệ. Không cần token và không gọi Central API trong bước nhận diện. Cấu hình profile có schema riêng, giới hạn nguồn MOC và đường dẫn `/vi/dossier/search`; mỗi lần đọc kiểm tra lại trang, tiêu đề, bảng duy nhất, cột và trạng thái loading. Profile không chứng nhận nghiệm thu cổng thật; trạng thái registry giữ nguyên.
+
+Ô Thời gian quy định được tách theo nhãn ngày chính thức; ngày thiếu giờ hoặc nhãn trùng bị báo lỗi từng dòng. Cơ quan/cán bộ được tách theo nhãn; tên thủ tục bị cắt bằng dấu ba chấm không được ghi đè. Chỉ trạng thái Đang xử lý đã được đối chiếu; trạng thái khác là UNKNOWN. Hướng dẫn vận hành: [MOC_SYNC.md](MOC_SYNC.md).
+
 `SourceAdapter` cung cấp `getSourceId()`, `getSourceName()`, `getSupportedHosts()`, `isSupportedPage()`, `detectLoginState()`, `detectCaseList()`, `extractCases()`, `normalizeCase()`, `mapStatus()` và `validateCase()`. Mỗi module nguồn kế thừa interface để sau này thêm parser đã được kiểm chứng.
 
 Generic TABLE parser chỉ chạy khi cấu hình có bằng chứng, đúng HTTPS hostname/path, TABLE đang hiển thị và dấu hiệu đăng nhập độc lập đang hiển thị. Phải chọn tab portal và bấm đồng bộ. Content script kiểm tra trang đang hiển thị, không dùng page state, window/postMessage bridge, input value, cookie hay session. Không fetch endpoint portal. Chỉ đọc các cột được ánh xạ, dùng văn bản hiển thị; nội dung cột khác không được đọc. Hàng/cột ẩn không được thu thập. Giới hạn 60 header/2.000 hàng mỗi trang, batch 100 hồ sơ.
@@ -39,6 +47,12 @@ Phạm vi `CURRENT_PAGE_ONLY` được hiển thị rõ. Không giả lập pagi
 Không cần password hay tự động đăng nhập. CSV/Excel hợp lệ có thể là đường import riêng trên Dashboard; không khiến DOM adapter tự thành IMPLEMENTED.
 
 ## Cấu hình TABLE
+
+Trang **Cấu hình adapter** có biểu mẫu chọn riêng từng bộ/ngành: URL danh sách, selector đăng nhập/bảng/dòng/ô, ánh xạ cột và trạng thái. Cấu hình đã lưu được tải lại khi chọn nguồn; mỗi nguồn giữ cấu hình riêng. Chỉ xác nhận đã kiểm chứng khi đã đối chiếu với phiên portal thực tế. Có thể tiếp tục nhập JSON qua mục nâng cao.
+
+Sau khi lưu, quay lại tab portal đang đăng nhập và mở extension → **Đọc thử dữ liệu**. Chức năng này không cần collector token, không gọi Central API, chỉ hiển thị tối đa 10 hồ sơ cùng số dòng hợp lệ và lỗi. Muốn lưu dữ liệu, cấu hình kết nối/token đúng nguồn rồi chọn **Đồng bộ trang hiện tại**. Chuyển trang thủ công để đọc các trang tiếp theo.
+
+Collector từ chối bảng thiếu bất kỳ trường đã ánh xạ nào, tránh bỏ sót ngày hẹn hoặc trạng thái khi portal đổi bố cục. Các nhãn thay thế cho cùng một trường được chấp nhận nếu chỉ một nhãn xuất hiện. Bộ kiểm thử tổng hợp bao phủ cả 11 nguồn; không thay thế nghiệm thu trên cổng thật.
 
 Trang options chấp nhận cấu hình JSON tối đa 32KB. Mọi nguồn, kể cả TP.HCM, đều cần `headerMappings` từ mẫu đã kiểm chứng. Schema dưới đây dùng mô tả, không cung cấp selector portal:
 

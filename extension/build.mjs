@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SOURCES } from './adapters/source-registry.mjs';
 import { hostPermission, normalizeCentralUrl } from './api/sync.mjs';
+import { DASHBOARD_FRAME_ORIGIN } from './api/dashboard.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 await mkdir(path.join(root, 'shared'), { recursive: true });
@@ -38,10 +39,10 @@ const extra = process.env.EXTENSION_CENTRAL_ORIGIN ? [hostPermission(normalizeCe
 const legacyOrigin = process.env.EXTENSION_CENTRAL_ORIGIN ? new URL(normalizeCentralUrl(process.env.EXTENSION_CENTRAL_ORIGIN)).origin : null;
 const connectSources = [...new Set(['https://script.google.com', 'https://script.googleusercontent.com', legacyOrigin].filter(Boolean))];
 const manifest = {
-  manifest_version: 3, name: 'Giám sát hồ sơ TTHC — Collector', version: '0.3.0',
+  manifest_version: 3, name: 'Giám sát hồ sơ TTHC — Collector', version: '0.7.0',
   description: 'Collector thủ công, xác nhận đăng nhập và cấu hình nguồn trước khi đọc hồ sơ.',
-  minimum_chrome_version: '120', permissions: ['storage', 'activeTab', 'alarms'],
-  host_permissions: [...portalMatches, 'https://script.google.com/macros/s/*', 'https://script.googleusercontent.com/*'],
+  minimum_chrome_version: '120', permissions: ['storage', 'activeTab', 'alarms', 'scripting'],
+  host_permissions: [...portalMatches, 'https://script.google.com/macros/s/*', 'https://script.googleusercontent.com/*', `${DASHBOARD_FRAME_ORIGIN}/*`],
   ...(extra.length ? { optional_host_permissions: [...new Set(extra)] } : {}),
   background: { service_worker: 'background/service-worker.mjs', type: 'module' },
   action: { default_title: 'Collector hồ sơ', default_popup: 'popup/index.html' },

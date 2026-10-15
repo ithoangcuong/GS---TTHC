@@ -118,11 +118,29 @@ test('metadata rejects nested credentials, token/session variants and prototype 
 
 test('header parser ignores countdown, detects changed rows and avoids guessed column positions', () => {
   const candidates = recordsFromCells(['Trạng thái', 'Mã số hồ sơ', 'Thời gian còn lại'],
-    [['Đang xử lý', 'SYNTHETIC-004', 'Còn 1000 ngày'], ['mismatched row']], TPHCM_HEADER_MAPPINGS);
+    [['Đang xử lý', 'SYNTHETIC-004', 'Còn 1000 ngày'], ['mismatched row']], { 'Trạng thái': 'sourceStatus', 'Mã số hồ sơ': 'caseCode' });
   assert.deepEqual(candidates[0].record, { sourceStatus: 'Đang xử lý', caseCode: 'SYNTHETIC-004' });
   assert.match(candidates[1].error, /Số ô/);
   assert.throws(() => recordsFromCells(['Unknown header'], [['x']], TPHCM_HEADER_MAPPINGS));
   assert.throws(() => recordsFromCells(['Mã số hồ sơ', 'Mã hồ sơ'], [['x', 'x']], TPHCM_HEADER_MAPPINGS));
+});
+
+test('configured fields cannot silently disappear when a portal changes its headers', () => {
+  assert.throws(() => recordsFromCells(['Code'], [['SYNTHETIC']], { Code: 'caseCode', Due: 'dueAt' }), /thiếu cột/);
+  assert.deepEqual(recordsFromCells(['Code'], [['SYNTHETIC']], { Code: 'caseCode', 'Alternative code': 'caseCode' })[0].record,
+    { caseCode: 'SYNTHETIC' });
+});
+
+test('each ministry reads its own configured table and rejects another source URL', () => {
+  for (const source of SOURCES) {
+    const config = { ...syntheticConfig(), sourceSystem: source.id, listUrl: `https://${source.hostname}/synthetic-test-list` };
+    const adapter = adapterForHost(source.hostname, { [source.id]: config });
+    const result = adapter.extractCases(syntheticDocument({ rows: [['SYNTHETIC-ALL', '11/10/2026 09:00:00', 'Đang xử lý', 'ignored']] }), config.listUrl);
+    assert.equal(result.records.length, 1, source.id);
+    assert.equal(result.records[0].sourceSystem, source.id);
+    assert.equal(result.records[0].normalizedStatus, 'PROCESSING');
+    assert.throws(() => adapter.extractCases(syntheticDocument(), 'https://example.com/synthetic-test-list'));
+  }
 });
 
 test('adapters fail closed without evidence, matching list page and independent login marker', () => {
@@ -187,7 +205,7 @@ test('generated MV3 manifest keeps exact host boundaries and isolated script', a
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.content_scripts[0].world, 'ISOLATED');
   assert.equal(manifest.content_scripts[0].all_frames, false);
-  assert.equal(manifest.host_permissions.length, 14);
+  assert.equal(manifest.host_permissions.length, 15);
   assert.ok(!manifest.host_permissions.some(value => value.includes('<all_urls>') || value.includes('://*')));
   assert.ok(!(manifest.optional_host_permissions ?? []).some(value => value.includes('<all_urls>') || value.includes('://*')));
   assert.ok(!manifest.permissions.includes('cookies'));
@@ -196,9 +214,13 @@ test('generated MV3 manifest keeps exact host boundaries and isolated script', a
 
 test('generated isolated content bundle registers safely and refuses nonextension sender', async () => {
   let listener;
-  const chrome = { runtime: { id: 'synthetic-extension-id', onMessage: { addListener: callback => { listener = callback; } } } };
+  let registrations = 0;
+  const chrome = { runtime: { id: 'synthetic-extension-id', onMessage: { addListener: callback => { listener = callback; registrations++; } } } };
   const bundle = await readFile(new URL('../extension/content/collector.js', import.meta.url), 'utf8');
-  vm.runInNewContext(bundle, { chrome, URL, location: { hostname: 'motcua.tphcm.gov.vn', protocol: 'https:' } });
+  const context = vm.createContext({ chrome, URL, location: { hostname: 'motcua.tphcm.gov.vn', protocol: 'https:' } });
+  vm.runInContext(bundle, context);
+  vm.runInContext(bundle, context);
+  assert.equal(registrations, 1, 'reinjection must not duplicate the collector listener');
   assert.equal(typeof listener, 'function');
   let replied = false;
   assert.equal(listener({ type: 'COLLECT_VERIFIED_TABLE' }, { id: 'attacker-extension', url: 'https://attacker.example' }, () => { replied = true; }), false);

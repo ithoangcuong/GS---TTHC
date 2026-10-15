@@ -15,10 +15,19 @@ TTHC.Repo = (function () {
   };
   var legacySchemas = { USERS: schemas.USERS.slice(0, 11) };
   var nonBusiness = ['AUDIT_LOGS','SYNC_LOGS','DASHBOARD_CACHE'];
+  var requestCache = null;
+  function withRequest(callback, timing) {
+    var previous = requestCache;
+    requestCache = { rows: {}, book: null, timing: timing || {} };
+    try { return callback(); } finally { requestCache = previous; }
+  }
   function workbook() {
     var spreadsheetId = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
     if (!spreadsheetId || !/^[a-zA-Z0-9_-]{10,200}$/.test(spreadsheetId)) TTHC.Utils.error('SHEET_NOT_CONFIGURED', 'Chưa cấu hình SPREADSHEET_ID.');
-    return SpreadsheetApp.openById(spreadsheetId);
+    if (requestCache && requestCache.book) return requestCache.book;
+    var book = SpreadsheetApp.openById(spreadsheetId);
+    if (requestCache) requestCache.book = book;
+    return book;
   }
   function sheet(table) {
     if (!Object.prototype.hasOwnProperty.call(schemas, table)) TTHC.Utils.error('INVALID_TABLE', 'Bảng dữ liệu không hợp lệ.');
@@ -34,7 +43,19 @@ TTHC.Repo = (function () {
     if (properties.getProperty('REPOSITORY_PENDING') || properties.getProperty('REPOSITORY_BLOCKED')) TTHC.Utils.error('REPOSITORY_BLOCKED', 'Kho dữ liệu đang ghi hoặc cần kiểm tra phục hồi. Vui lòng thử lại.');
   }
   function read(table) {
+    var started = Date.now();
+    try { return readInternal(table); }
+    finally {
+      if (requestCache) {
+        requestCache.timing.repositoryReadMs = (requestCache.timing.repositoryReadMs || 0) + Date.now() - started;
+        requestCache.timing.repositoryReadCalls = (requestCache.timing.repositoryReadCalls || 0) + 1;
+      }
+    }
+  }
+  function readInternal(table) {
     assertReadable();
+    var version = revision(), cached = requestCache && requestCache.rows[table];
+    if (cached && cached.revision === version) return cached.rows.map(function (row) { return Object.assign({}, row); });
     var item = sheet(table), count = item.getLastRow() - 1;
     if (count <= 0) return [];
     var result = item.getRange(2, 1, count, schemas[table].length).getValues().map(function (row) {
@@ -43,6 +64,7 @@ TTHC.Repo = (function () {
       return object;
     }).filter(function (row) { return row[schemas[table][0]] !== ''; });
     assertReadable();
+    if (requestCache && nonBusiness.indexOf(table) < 0 && version === revision()) requestCache.rows[table] = { revision: version, rows: result.map(function (row) { return Object.assign({}, row); }) };
     return result;
   }
   function readSnapshot(tables) {
@@ -57,7 +79,9 @@ TTHC.Repo = (function () {
   function withLock(callback) {
     var lock = LockService.getScriptLock();
     if (!lock.tryLock(10000)) TTHC.Utils.error('BUSY', 'Hệ thống đang ghi dữ liệu. Vui lòng thử lại.');
-    try { return callback(); } finally { lock.releaseLock(); }
+    // Re-read under the lock; never make write decisions using earlier reads.
+    if (requestCache) requestCache.rows = {};
+    try { return callback(); } finally { if (requestCache) requestCache.rows = {}; lock.releaseLock(); }
   }
   function values(table, row) {
     if (!row || typeof row !== 'object' || Object.keys(row).some(function (name) { return schemas[table].indexOf(name) === -1; })) TTHC.Utils.error('INVALID_ROW', 'Dòng dữ liệu không khớp schema ' + table + '.');
@@ -139,5 +163,5 @@ TTHC.Repo = (function () {
     });
   }
   function writeBatch(table, rows, keyField, options) { return commit([{ table: table, rows: rows, keyField: keyField }], options && options.expectedRevision); }
-  return { schemas: schemas, legacySchemas: legacySchemas, workbook: workbook, read: read, readSnapshot: readSnapshot, revision: revision, withLock: withLock, commit: commit, writeBatch: writeBatch };
+  return { schemas: schemas, legacySchemas: legacySchemas, workbook: workbook, read: read, readSnapshot: readSnapshot, revision: revision, withRequest: withRequest, withLock: withLock, commit: commit, writeBatch: writeBatch };
 })();

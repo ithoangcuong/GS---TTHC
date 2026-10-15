@@ -4,6 +4,12 @@ Manifest V3 collector đọc dữ liệu giám sát trên trang danh sách đang
 
 ## Cài đặt
 
+Từ **0.5.0**, Dashboard dự án được cấu hình sẵn. Đăng nhập Dashboard, giữ tab mở, rồi chọn **Đọc và ghi lên hệ thống** trên tab portal. Extension tự cấp và giữ token đúng nguồn/hostname trong phiên; không cần sao chép URL/token. Nếu chưa có tab Dashboard, extension mở trang đăng nhập; đăng nhập xong quay lại portal và bấm ghi. Tính năng dùng RPC hiện có nên không cần triển khai lại Apps Script.
+
+Quyền bổ sung chỉ dành cho hostname iframe chính xác của Dashboard dự án. Bridge chỉ chạy trong tab có URL triển khai khớp và iframe `/userCodeAppPanel` đúng origin, đối chiếu `auth.config.webAppUrl` trước khi gọi `extension.tokens.create`. Session Dashboard ở nguyên trong frame, chỉ collector token có phạm vi nguồn được trả về. Tài khoản thiếu quyền vẫn bị backend từ chối. Kết nối thủ công được giữ trong mục nâng cao cho hệ thống khác.
+
+Phiên bản **0.4.1** tự phục hồi khi tab chưa nạp bộ đọc sau khi extension được cập nhật. Quyền `scripting` chỉ nạp `content/collector.js` đóng gói sẵn trong isolated world của frame chính, sau khi kiểm tra lại nguồn và URL. Chỉ thử lại một lần; lỗi đọc bảng/đăng nhập không kích hoạt nạp lại.
+
 Cài collector bằng **Load unpacked** trên Chrome/Edge để sử dụng miễn phí trên máy của bạn.
 
 1. Chạy `npm run extension:build` tại thư mục gốc.
@@ -11,7 +17,7 @@ Cài collector bằng **Load unpacked** trên Chrome/Edge để sử dụng mi�
    Nếu đã cài extension, bấm **Reload/Tải lại** trên thẻ extension sau khi build, rồi tải lại tab portal để nạp bộ đọc mới.
 3. Mở Dashboard Apps Script đã triển khai; đăng nhập bằng tên tài khoản và mật khẩu do admin cấp, đổi mật khẩu mặc định khi được yêu cầu. Tạo **collector token** cho nguồn/hostname sẽ đồng bộ. Đây là token riêng của TTHC MONITOR.
 4. Mở portal tương ứng và đăng nhập. Trong popup, dán URL Web App `https://script.google.com/macros/s/DEPLOYMENT_ID/exec` cùng collector token.
-5. Nhập cấu hình adapter đã kiểm chứng trong **Cấu hình adapter**. Chỉ bật đồng bộ sau khi có URL danh sách, dấu hiệu đăng nhập độc lập, selector TABLE và mapping header từ mẫu thực tế được phép sử dụng.
+5. Với **Bộ Xây dựng**, mở trang **Tra cứu hồ sơ toàn cơ quan**, xác nhận đã đăng nhập trong popup rồi chọn **Nhận diện và đọc thử bảng Bộ Xây dựng**. Bộ đọc nhận bảng Angular Material và tự tách các ngày/cơ quan/cán bộ trong ô gộp. Các nguồn khác dùng biểu mẫu **Cấu hình adapter** theo bảng đã kiểm chứng.
 6. Mở tab danh sách đang hiển thị rồi bấm **Đồng bộ trang hiện tại**. Sau khi người dùng mở trang kế tiếp, có thể bấm đồng bộ lại. Phạm vi luôn là `CURRENT_PAGE_ONLY`.
 
 Token chỉ giữ trong `chrome.storage.session` với quyền `TRUSTED_CONTEXTS`; content script không nhận token. **Xóa token trong phiên** xóa bản lưu cục bộ. Token hết hạn hoặc tài khoản bị vô hiệu hóa sẽ bị backend từ chối. Khi token hết hạn, đăng nhập Dashboard và cấp lại cho đúng nguồn trước khi **Gửi lại batch lỗi**. Batch ID được giữ nguyên qua retry để backend không ghi trùng.
@@ -20,7 +26,7 @@ Với Bộ Xây dựng, mở đúng trang [danh sách hồ sơ](https://motcuabx
 
 ## Trạng thái tích hợp thực tế
 
-**Cả 11 adapter đang `WAITING_FOR_SAMPLE`.** Repository chưa có DOM/API từ một phiên portal được phép để nghiệm thu collector. Các nhãn ví dụ trong yêu cầu và fixture tổng hợp trong test không phải bằng chứng tích hợp. Lưu cấu hình với `verified=true` là xác nhận của người tích hợp; thao tác này không tự đổi trạng thái registry thành đã nghiệm thu.
+**Trạng thái nghiệm thu 11 nguồn vẫn là `WAITING_FOR_SAMPLE`.** MOC có profile `MOC_SEARCH_V1` dựa trên ảnh người dùng ngày 11/10/2026 và mã giao diện công khai, đã được kiểm thử bằng DOM tổng hợp trên Chrome. Chưa nghiệm thu đọc/đồng bộ hồ sơ trong phiên đăng nhập thật. Profile chỉ được lưu qua nút nhận diện sau khi người dùng xác nhận phiên và có dòng hợp lệ. Các nguồn khác vẫn cần cấu hình TABLE đã kiểm chứng. Xác nhận cục bộ không tự đổi trạng thái nghiệm thu registry.
 
 Mỗi nguồn có module riêng: `tphcm.mjs`, `mof.mjs`, `moha.mjs`, `moc.mjs`, `moit.mjs`, `mae.mjs`, `moh.mjs`, `moet.mjs`, `moj.mjs`, `bvhttdl.mjs`, `bdttg.mjs`. Registry extension có 11 nguồn và 12 hostname chính xác. MOC dùng `motcuabxd.moc.gov.vn`, đồng thời giữ `motcua.moc.gov.vn` để tương thích. Không cấp quyền cho các subdomain hoặc tên miền gần giống. Batch gửi hostname của tab thực tế; token phải được cấp cho đúng hostname đó.
 

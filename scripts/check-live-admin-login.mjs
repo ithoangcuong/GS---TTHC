@@ -30,15 +30,17 @@ try {
   }
   assert.ok(loginFrame, 'The deployed page did not render the TTHC account login form.');
   const config = await loginFrame.evaluate(() => new Promise(resolveConfig => {
+    const started = performance.now();
     const timeout = setTimeout(() => resolveConfig({ probeError: 'RPC_TIMEOUT' }), 15000);
     google.script.run.withSuccessHandler(result => {
       clearTimeout(timeout);
-      const data = result && result.data;
+      const data = result && result.data && result.data.config;
       resolveConfig(result && result.ok && data ? {
         configured: data.configured,
+        bootstrapRpcMs: Math.round(performance.now() - started),
         setupIssues: Array.isArray(data.setupIssues) ? data.setupIssues.map(issue => ({ property: issue.property, reason: issue.reason })) : null,
       } : { probeError: result?.error?.code || 'RPC_FAILED' });
-    }).withFailureHandler(() => { clearTimeout(timeout); resolveConfig({ probeError: 'RPC_CONNECTION_ERROR' }); }).rpc('auth.config', {}, '');
+    }).withFailureHandler(() => { clearTimeout(timeout); resolveConfig({ probeError: 'RPC_CONNECTION_ERROR' }); }).rpc('auth.bootstrap', {}, '');
   }));
   const report = {
     checkedAt: new Date().toISOString(),

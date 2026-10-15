@@ -37,6 +37,11 @@
     if (record.needsReview || ['REVIEW','NEEDS_REVIEW'].includes(record.alertLevel)) return 'Cần xác minh hạn trả';
     return '<span data-countdown="'+e(record.effectiveDueAt||'')+'">'+e(remaining(record.effectiveDueAt))+'</span>';
   }
+  function collectionRange(context) {
+    if (!context) return '<span class="cell-secondary">Chưa ghi nhận khoảng ngày nộp</span>';
+    const day=value=>value?date(value,false):'Không giới hạn';
+    return '<span class="cell-secondary">Ngày nộp từ ngày: '+e(day(context.submittedFrom))+' · đến ngày: '+e(day(context.submittedTo))+'</span><span class="cell-secondary">Đọc bộ lọc lúc '+e(date(context.capturedAt))+' · Trang hiện tại</span>';
+  }
   function observation(record) {
     if (!record.lastObservedAt || !Number.isFinite(new Date(record.lastObservedAt).getTime())) return '<span class="badge review">Chưa có quan sát</span>';
     const age=Math.max(0,(now()-new Date(record.lastObservedAt).getTime())/1000);
@@ -63,12 +68,19 @@
   function loading(message='Đang tải dữ liệu…') {return '<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span>'+e(message)+'</div>';}
   function toast(message,type='success') {const node=document.createElement('div'),region=document.querySelector('#toast-region');node.className='toast '+(type==='error'?'error':'success');node.textContent=message;while(region.children.length>=2)region.firstElementChild.remove();region.append(node);setTimeout(()=>node.remove(),6500);}
   function rpc(action,payload={}) {
+    const started=performance.now();
+    const recordTiming=(response)=>{
+      const entries=window.__tthcPerformance||(window.__tthcPerformance=[]);
+      entries.push({action,totalMs:Math.round(performance.now()-started),serverMs:response?.timing?.serverMs??null,repositoryReadMs:response?.timing?.repositoryReadMs??null,repositoryReadCalls:response?.timing?.repositoryReadCalls??null,ok:response?.ok===true});
+      if(entries.length>100)entries.shift();
+    };
     return new Promise((resolve,reject)=>{
       if (!window.google || !google.script || !google.script.run) {reject(Object.assign(new Error('Trang này cần được mở từ Web App Google Apps Script đã triển khai.'),{code:'APPS_SCRIPT_REQUIRED'}));return;}
       google.script.run.withSuccessHandler(response=>{
+        recordTiming(response);
         if (response && response.ok===true) resolve(response.data);
         else {const detail=response&&response.error||{};reject(Object.assign(new Error(detail.message||'Yêu cầu chưa hoàn tất. Vui lòng thử lại.'),{code:detail.code||'SERVER_ERROR',requestId:detail.requestId}));}
-      }).withFailureHandler(error=>reject(Object.assign(new Error(error&&error.message||'Không thể kết nối máy chủ. Vui lòng thử lại.'),{code:'CONNECTION_ERROR'}))).rpc(action,payload,state.sessionToken);
+      }).withFailureHandler(error=>{recordTiming(null);reject(Object.assign(new Error(error&&error.message||'Không thể kết nối máy chủ. Vui lòng thử lại.'),{code:'CONNECTION_ERROR'}));}).rpc(action,payload,state.sessionToken);
     });
   }
   const option=(value,label,selected)=>'<option value="'+e(value)+'"'+(String(value)===String(selected==null?'':selected)?' selected':'')+'>'+e(label)+'</option>';
@@ -86,13 +98,14 @@
   function navigate(page,params={},id='') {const target=link(page,params,id);if(location.hash===target)render();else location.hash=target;}
   function can(permission) {return state.permissions[permission]===true;}
   function caseFilters() {
-    const accepted=['q','sourceSystem','normalizedStatus','alertLevel','agencyName','departmentName','officerName','procedureName','agencyKey','departmentKey','officerKey','procedureKey','receivedFrom','receivedTo','dueFrom','dueTo','observedBefore','sortBy','sortDirection','bucket'];
+    const accepted=['q','sourceSystem','normalizedStatus','alertLevel','agencyName','departmentName','officerName','procedureName','agencyKey','departmentKey','officerKey','procedureKey','submittedFrom','submittedTo','receivedFrom','receivedTo','dueFrom','dueTo','observedBefore','sortBy','sortDirection','bucket'];
     return Object.fromEntries(Object.entries(state.filters).filter(([key])=>accepted.includes(key)));
   }
   function filters({cases=false,reports=false,reportPeriod=false,alerts=false,audit=false}={}) {
     const f=state.filters;
     return '<form id="filter-form" class="filters">'+field(audit?'Tìm hành động / đối tượng':'Mã hồ sơ hoặc từ khóa',input('q','search',f.q||'','maxlength="160" placeholder="Mã hồ sơ hoặc từ khóa…"'))+
       (!audit?field('Nguồn dữ liệu',select('sourceSystem',state.sources.map(source=>[sourceId(source),sourceName(source)]),f.sourceSystem)):'')+
+      (state.route==='dashboard'||cases||reports?field('Ngày nộp từ ngày',input('submittedFrom','date',f.submittedFrom||''))+field('Ngày nộp đến ngày',input('submittedTo','date',f.submittedTo||'')):'')+
       (cases||reports?field('Cơ quan',input('agencyName','text',f.agencyName||'','maxlength="160"'))+field('Cán bộ',input('officerName','text',f.officerName||'','maxlength="160"')):'')+
       (alerts?field('Nhóm cảnh báo',select('kind',[['OVERDUE','Quá hạn'],['WARNING','Sắp đến hạn'],['STALE_DATA','Chưa cập nhật dữ liệu'],['SOURCE_ERROR','Lỗi đồng bộ nguồn'],['NEEDS_REVIEW','Cần xác minh']],f.kind)):'')+
       '<button class="button" type="submit">Lọc dữ liệu</button><button class="button secondary" type="button" data-clear-filters>Xóa lọc</button>'+
@@ -114,8 +127,8 @@
     return table(compact?['Hồ sơ / thủ tục','Cán bộ / bước','Hạn trả / thời gian','Quan sát lần cuối','Cảnh báo']:['Hồ sơ / nguồn','Thủ tục','Cơ quan / cán bộ','Bước xử lý','Ngày hẹn trả','Thời gian','Quan sát lần cuối','Trạng thái / cảnh báo'],items.map(record=>{
       const caseCell='<a class="cell-primary text-link" href="'+e(link('cases',{},record.id))+'">'+e(record.caseCode||record.id)+'</a><span class="cell-secondary">'+e(compact?record.procedureName:sourceLabel(record.sourceSystem))+'</span>';
       const step=record.currentStep!=null?e(record.currentStep)+(record.totalSteps!=null?' / '+e(record.totalSteps):''):'<span class="muted">Nguồn chưa cung cấp</span>';
-      return compact?'<tr><td class="wrap">'+caseCell+'</td><td>'+e(record.officerName||'Chưa phân công')+'<span class="cell-secondary">Bước '+step+'</span></td><td>'+e(date(record.effectiveDueAt))+'<span class="cell-secondary">'+countdown(record)+'</span></td><td>'+observation(record)+'</td><td>'+badge(record.alertLevel)+'</td></tr>':
-        '<tr><td>'+caseCell+'</td><td class="wrap">'+e(record.procedureName||'—')+'</td><td>'+e(record.agencyName||'—')+'<span class="cell-secondary">'+e(record.officerName||'Chưa phân công')+'</span></td><td>'+step+'</td><td>'+e(date(record.effectiveDueAt))+'</td><td>'+countdown(record)+'</td><td>'+observation(record)+'</td><td>'+badge(record.normalizedStatus)+'<span class="cell-secondary">'+badge(record.alertLevel)+'</span></td></tr>';
+      return compact?'<tr><td class="wrap">'+caseCell+'</td><td>'+e(record.officerName||'Chưa phân công')+'<span class="cell-secondary">Bước '+step+'</span></td><td>'+e(date(record.effectiveDueAt))+'<span class="cell-secondary">'+countdown(record)+'</span></td><td>'+observation(record)+collectionRange(record.lastCollectionContext)+'</td><td>'+badge(record.alertLevel)+'</td></tr>':
+        '<tr><td>'+caseCell+'</td><td class="wrap">'+e(record.procedureName||'—')+'</td><td>'+e(record.agencyName||'—')+'<span class="cell-secondary">'+e(record.officerName||'Chưa phân công')+'</span></td><td>'+step+'</td><td>'+e(date(record.effectiveDueAt))+'</td><td>'+countdown(record)+'</td><td>'+observation(record)+collectionRange(record.lastCollectionContext)+'</td><td>'+badge(record.normalizedStatus)+'<span class="cell-secondary">'+badge(record.alertLevel)+'</span></td></tr>';
     }));
   }
   function metric(label,value,noteText,kind='',href='') {return '<'+(href?'a href="'+e(href)+'"':'div')+' class="metric '+e(kind)+'"><div class="metric-label">'+e(label)+'</div><div class="metric-symbol">'+icon(kind==='overdue'||kind==='warning'?'alerts':'cases')+'</div><div class="metric-value">'+e(value)+'</div><div class="metric-note">'+e(noteText)+'</div></'+(href?'a':'div')+'>';}
@@ -227,7 +240,7 @@
   }
   async function sync() {
     const result=await rpc('sync.list',{...state.filters,page:Number(state.filters.page)||1,pageSize:25});state.result=result;
-    return heading('Lịch sử đồng bộ','Theo dõi các batch thu thập và lỗi nhập dữ liệu.')+filters()+panel('Các lượt đồng bộ','',array(result.items).length?table(['Nguồn','Thời điểm','Trạng thái','Chấp nhận / từ chối','Thông báo'],result.items.map(row=>'<tr><td>'+e(sourceLabel(row.sourceSystem))+'</td><td>'+e(date(row.createdAt||row.startedAt))+'</td><td>'+badge(row.status)+'</td><td>'+number(row.accepted)+' / '+number(row.rejected)+'</td><td class="wrap">'+e(row.message||row.error||row.errorCode||'—')+'</td></tr>'))+pagination(result):empty('Chưa có lượt đồng bộ','Batch gửi từ extension sẽ được ghi nhận tại đây.'));
+    return heading('Lịch sử đồng bộ','Khoảng ngày nộp là bộ lọc hiển thị lúc đọc nguồn; chỉ thu thập trang hiện tại, chưa xác nhận đã đọc đủ cả khoảng ngày.')+filters()+panel('Các lượt đồng bộ','',array(result.items).length?table(['Nguồn','Thời điểm','Ngày nộp từ ngày – đến ngày','Trạng thái','Chấp nhận / từ chối','Thông báo'],result.items.map(row=>'<tr><td>'+e(sourceLabel(row.sourceSystem))+'</td><td>'+e(date(row.createdAt||row.startedAt))+'</td><td>'+collectionRange(row.collectionContext)+'</td><td>'+badge(row.status)+'</td><td>'+number(row.accepted)+' / '+number(row.rejected)+'</td><td class="wrap">'+e(row.message||row.error||row.errorCode||'—')+'</td></tr>'))+pagination(result):empty('Chưa có lượt đồng bộ','Batch gửi từ extension sẽ được ghi nhận tại đây.'));
   }
   function scopeFields(scope={}) {
     return ['sources','agencies','departments','officers'].map((key,i)=>field(['Nguồn','Cơ quan','Phòng / đơn vị','Cán bộ'][i]+' được phép',input('scope_'+key,'text',array(scope[key]).join(', '),'required maxlength="1200"'),key==='sources'?'ID nguồn, ngăn cách bằng dấu phẩy. * là toàn bộ.':'Tên đúng từ nguồn, ngăn cách bằng dấu phẩy. * là toàn bộ.')).join('');
@@ -262,8 +275,9 @@
   function navItem(page,label,symbol) {return '<a class="nav-link '+(state.route===page?'active':'')+'" href="'+e(link(page))+'" '+(state.route===page?'aria-current="page"':'')+'>'+icon(symbol)+'<span>'+e(label)+'</span></a>';}
   function shell() {
     const user=state.user;
-    app.innerHTML='<div class="shell"><aside class="sidebar" id="sidebar" aria-label="Điều hướng chính"><a class="brand" href="#dashboard"><span class="brand-mark">'+icon('shield')+'</span><span><strong>TTHC MONITOR</strong><small>GIÁM SÁT HỒ SƠ</small></span></a><nav><div class="nav-group">Điều hành</div>'+navItem('dashboard','Tổng quan','dashboard')+navItem('cases','Danh sách hồ sơ','cases')+navItem('alerts','Trung tâm cảnh báo','alerts')+'<div class="nav-group">Phạm vi & dữ liệu</div>'+navItem('sources','Nguồn dữ liệu','sources')+navItem('officers','Cán bộ','users')+navItem('sync','Lịch sử đồng bộ','sync')+'<div class="nav-group">Báo cáo</div>'+navItem('reports','Báo cáo tổng hợp','reports')+navItem('statistics','Thống kê','reports')+(can('canManageUsers')||can('canManageSettings')?'<div class="nav-group">Quản trị</div>':'')+(can('canManageUsers')?navItem('users','Người dùng','users'):'')+(can('canManageSettings')?navItem('settings','Cấu hình nghiệp vụ','settings'):'')+(can('canViewAudit')||can('canManageUsers')?navItem('audit','Nhật ký kiểm toán','audit'):'')+'</nav><div class="sidebar-footer"><span>Giám sát theo lần quan sát</span><span>Giờ Việt Nam · UTC+07:00</span></div></aside><div class="main-shell"><header class="topbar"><button class="icon-button mobile-menu" id="menu-toggle" aria-label="Mở điều hướng" aria-controls="sidebar" aria-expanded="false">'+icon('menu')+'</button><div class="topbar-title">Hệ thống giám sát <span aria-hidden="true">/</span> <strong>'+e(TITLES[state.route])+'</strong></div><div class="topbar-actions"><div class="user-info"><span class="avatar">'+e((user.displayName||user.username||'T').slice(0,1).toUpperCase())+'</span><span><strong>'+e(user.displayName||user.username)+'</strong><small>'+e(ROLE[user.role]||user.role)+'</small></span></div><button class="button ghost small" id="account-password">Đổi mật khẩu</button><button class="button ghost small" id="account-switch">Đăng xuất</button></div></header><main class="content" id="page-content" tabindex="-1">'+loading()+'</main></div></div>';
+    app.innerHTML='<div class="shell"><aside class="sidebar" id="sidebar" aria-label="Điều hướng chính"><a class="brand" href="#dashboard"><span class="brand-mark">'+icon('shield')+'</span><span><strong>TTHC MONITOR</strong><small>GIÁM SÁT HỒ SƠ</small></span></a><nav><div class="nav-group">Điều hành</div>'+navItem('dashboard','Tổng quan','dashboard')+navItem('cases','Danh sách hồ sơ','cases')+navItem('alerts','Trung tâm cảnh báo','alerts')+'<div class="nav-group">Phạm vi & dữ liệu</div>'+navItem('sources','Nguồn dữ liệu','sources')+navItem('officers','Cán bộ','users')+navItem('sync','Lịch sử đồng bộ','sync')+'<div class="nav-group">Báo cáo</div>'+navItem('reports','Báo cáo tổng hợp','reports')+navItem('statistics','Thống kê','reports')+(can('canManageUsers')||can('canManageSettings')?'<div class="nav-group">Quản trị</div>':'')+(can('canManageUsers')?navItem('users','Người dùng','users'):'')+(can('canManageSettings')?navItem('settings','Cấu hình nghiệp vụ','settings'):'')+(can('canViewAudit')||can('canManageUsers')?navItem('audit','Nhật ký kiểm toán','audit'):'')+'</nav><div class="sidebar-footer"><span>Giám sát theo lần quan sát</span><span>Giờ Việt Nam · UTC+07:00</span></div></aside><div class="main-shell"><header class="topbar"><button class="icon-button mobile-menu" id="menu-toggle" aria-label="Mở điều hướng" aria-controls="sidebar" aria-expanded="false">'+icon('menu')+'</button><div class="topbar-title">Hệ thống giám sát <span aria-hidden="true">/</span> <strong>'+e(TITLES[state.route])+'</strong></div><div class="topbar-actions"><div class="user-info"><span class="avatar">'+e((user.displayName||user.username||'T').slice(0,1).toUpperCase())+'</span><span><strong>'+e(user.displayName||user.username)+'</strong><small>'+e(ROLE[user.role]||user.role)+'</small></span></div><button class="button ghost small" id="account-recovery">Email khôi phục</button><button class="button ghost small" id="account-password">Đổi mật khẩu</button><button class="button ghost small" id="account-switch">Đăng xuất</button></div></header><main class="content" id="page-content" tabindex="-1">'+loading()+'</main></div></div>';
     document.querySelector('#menu-toggle').addEventListener('click',event=>{const expanded=document.querySelector('#sidebar').classList.toggle('open');event.currentTarget.setAttribute('aria-expanded',String(expanded));});
+    document.querySelector('#account-recovery').addEventListener('click',()=>showRecovery('enroll'));
     document.querySelector('#account-password').addEventListener('click',()=>showPasswordChange(false));
     document.querySelector('#account-switch').addEventListener('click',event=>runButton(event.currentTarget,logout));
   }
@@ -353,14 +367,14 @@
   function loginSetupHtml() {
     if(state.config.configured!==false)return '';
     const issues=array(state.config.setupIssues),names=issues.map(issue=>issue.property).filter(Boolean);
-    return '<details class="login-setup"><summary>Hướng dẫn dành cho quản trị viên</summary>'+(names.length?'<p>Cần kiểm tra: <strong>'+e(names.join(', '))+'</strong>.</p>':'')+'<ol><li>Mở dự án trong Apps Script Editor → Project Settings → Script Properties; hoàn tất cấu hình lưu trữ và khóa mã hóa.</li><li>Đặt <strong>DEFAULT_USER_PASSWORD</strong> cho mật khẩu mặc định, <strong>BOOTSTRAP_USERNAME</strong> cho tên tài khoản quản trị ban đầu (mặc định: admin) và <strong>BOOTSTRAP_PASSWORD</strong> cho mật khẩu quản trị ban đầu.</li><li>Chạy <strong>setupTthcMonitor_</strong>, sau đó <strong>bootstrapAdmin_</strong> để cấp tài khoản quản trị. Bấm <strong>Kiểm tra kết nối lại</strong>.</li></ol></details>';
+    return '<details class="login-setup"><summary>Hướng dẫn dành cho quản trị viên</summary>'+(names.length?'<p>Cần kiểm tra: <strong>'+e(names.join(', '))+'</strong>.</p>':'')+'<ol><li>Mở dự án trong Apps Script Editor → Project Settings → Script Properties; hoàn tất cấu hình lưu trữ và khóa mã hóa.</li><li>Đặt <strong>DEFAULT_USER_PASSWORD</strong> cho mật khẩu mặc định, <strong>BOOTSTRAP_USERNAME</strong> cho tên tài khoản quản trị ban đầu (mặc định: admin) và <strong>BOOTSTRAP_PASSWORD</strong> cho mật khẩu quản trị ban đầu.</li><li>Chạy <strong>setupTthcMonitor_</strong>, sau đó <strong>bootstrapAdmin_</strong> để cấp tài khoản quản trị. Tải lại trang sau khi hoàn tất.</li></ol></details>';
   }
   function showLogin(message='',error=null) {
     ++state.request;++state.loginAttempt;state.user=null;state.permissions={};state.sources=[];state.settings={};state.result=null;state.passwordChange=false;
     document.title='Đăng nhập · TTHC Monitor';
-    app.innerHTML=loginLayout('<div class="eyebrow">CỔNG ĐIỀU HÀNH</div><h1>Đăng nhập</h1><p>Sử dụng tên đăng nhập và mật khẩu được Quản trị viên cấp.</p>'+(message?'<div class="notice '+(error?'error':'warning')+'" role="alert"><p>'+e(message)+'</p></div>':'')+'<form id="login-form">'+field('Tên đăng nhập',input('username','text','','required minlength="3" maxlength="64" autocomplete="username" autocapitalize="none" spellcheck="false"'))+field('Mật khẩu',input('password','password','','required maxlength="128" autocomplete="current-password"'))+'<p id="login-error" class="error-inline" role="alert"></p><button class="button" type="submit" id="account-login" aria-describedby="login-help" '+(state.config.configured===false?'disabled':'')+'>Đăng nhập</button></form><button class="button secondary" type="button" id="retry-session">Kiểm tra kết nối lại</button>'+loginSetupHtml()+'<p class="login-footnote" id="login-help">Quản trị viên cấp tài khoản và phạm vi được xem. Khi quên mật khẩu, liên hệ Quản trị viên để được đặt lại.<br><br>Người dùng tự đăng nhập hợp lệ tại các cổng nguồn; extension chỉ đọc dữ liệu được phép hiển thị.</p>'+(error&&error.requestId?'<p class="error-request">Mã yêu cầu: '+e(error.requestId)+'</p>':''));
+    app.innerHTML=loginLayout('<div class="eyebrow">CỔNG ĐIỀU HÀNH</div><h1>Đăng nhập</h1><p>Sử dụng tên đăng nhập và mật khẩu được Quản trị viên cấp.</p>'+(message?'<div class="notice '+(error?'error':'warning')+'" role="alert"><p>'+e(message)+'</p></div>':'')+'<form id="login-form">'+field('Tên đăng nhập',input('username','text','','required minlength="3" maxlength="64" autocomplete="username" autocapitalize="none" spellcheck="false"'))+field('Mật khẩu',input('password','password','','required maxlength="128" autocomplete="current-password"'))+'<p id="login-error" class="error-inline" role="alert"></p><button class="button" type="submit" id="account-login" aria-describedby="login-help" '+(state.config.configured===false?'disabled':'')+'>Đăng nhập</button></form><button class="button secondary" type="button" id="forgot-password">Quên mật khẩu?</button>'+loginSetupHtml()+'<p class="login-footnote" id="login-help">Quản trị viên cấp tài khoản và phạm vi được xem. Dùng Quên mật khẩu để nhận liên kết qua email đã xác minh.<br><br>Người dùng tự đăng nhập hợp lệ tại các cổng nguồn; extension chỉ đọc dữ liệu được phép hiển thị.</p>'+(error&&error.requestId?'<p class="error-request">Mã yêu cầu: '+e(error.requestId)+'</p>':''));
     document.querySelector('#login-form').addEventListener('submit',async event=>{
-      event.preventDefault();const form=event.currentTarget,button=form.querySelector('[type="submit"]'),retry=document.querySelector('#retry-session'),errorNode=document.querySelector('#login-error');
+      event.preventDefault();const form=event.currentTarget,button=form.querySelector('[type="submit"]'),retry=document.querySelector('#forgot-password'),errorNode=document.querySelector('#login-error');
       if(button.disabled||state.config.configured===false)return;
       const attempt=++state.loginAttempt,values=formPayload(form);errorNode.textContent='';retry.disabled=true;
       await runButton(button,async()=>{
@@ -375,12 +389,45 @@
         } finally {if(retry.isConnected)retry.disabled=false;}
       },'Đang đăng nhập…');
     });
-    document.querySelector('#retry-session').addEventListener('click',bootstrap);
+    document.querySelector('#forgot-password').addEventListener('click',()=>showRecovery('request'));
   }
   function applySession(session) {
     if(!session||!session.user||session.user.status!=='ACTIVE')throw Object.assign(new Error('Tài khoản của bạn chưa được cấp quyền sử dụng hệ thống. Vui lòng liên hệ Quản trị viên.'),{code:'ACCESS_DENIED'});
     if(session.sessionToken)setSessionToken(session.sessionToken);
     state.user=session.user;state.permissions=session.permissions||{};state.sessionTime=session.serverTime;state.clockOffset=session.serverTime?new Date(session.serverTime).getTime()-Date.now():0;
+  }
+  async function showRecovery(mode,token='') {
+    const sequence=++state.request;state.passwordChange=true;
+    const titles={request:'Quên mật khẩu',enroll:'Email khôi phục',verify:'Xác minh email',reset:'Đặt lại mật khẩu'};
+    const descriptions={request:'Nhập tên tài khoản để nhận liên kết qua email đã xác minh. Liên kết có hiệu lực 15 phút.',enroll:'Xác minh email khi bạn còn đăng nhập để có thể tự đặt lại mật khẩu sau này.',verify:'Bấm xác nhận để dùng email này làm email khôi phục tài khoản.',reset:'Đặt mật khẩu mới có từ 10 đến 128 ký tự.'};
+    let existing={};
+    if(mode==='enroll') {
+      app.innerHTML=loginLayout(loading());
+      try {existing=await rpc('auth.recovery.status');} catch(error) {if(sequence===state.request){state.passwordChange=false;showLogin(error.message,error);}return;}
+      if(sequence!==state.request)return;
+    }
+    const labels={request:'Gửi liên kết đặt lại',enroll:'Gửi email xác minh',verify:'Xác nhận email',reset:'Lưu mật khẩu mới'};
+    const controls=mode==='request'?field('Tên tài khoản',input('username','text','','required minlength="3" maxlength="64" autocomplete="username"')):
+      mode==='enroll'?field('Email khôi phục',input('email','email',existing.email||'','required maxlength="254" autocomplete="email"'))+field('Mật khẩu hiện tại',input('currentPassword','password','','required maxlength="128" autocomplete="current-password"')):
+      mode==='reset'?field('Mật khẩu mới',input('newPassword','password','','required minlength="10" maxlength="128" autocomplete="new-password"'))+field('Nhập lại mật khẩu mới',input('confirmPassword','password','','required minlength="10" maxlength="128" autocomplete="new-password"')):'';
+    document.title=titles[mode]+' · TTHC Monitor';
+    app.innerHTML=loginLayout('<h1>'+titles[mode]+'</h1><p>'+descriptions[mode]+'</p>'+(mode==='enroll'&&existing.verified?notice('Email hiện tại đã được xác minh. Thay đổi chỉ có hiệu lực sau khi xác minh email mới.'):'')+'<form id="recovery-form">'+controls+'<p id="recovery-message" role="status" aria-live="polite"></p><button class="button" type="submit">'+labels[mode]+'</button></form><button id="recovery-back" type="button" class="button secondary">'+(mode==='enroll'?'Quay lại':'Về đăng nhập')+'</button>'+(mode==='request'?'<p class="login-footnote">Nếu chưa xác minh email hoặc không còn truy cập email, hãy liên hệ quản trị viên để được đặt lại mật khẩu.</p>':''));
+    document.querySelector('#recovery-back').addEventListener('click',()=>{state.passwordChange=false;bootstrap();});
+    document.querySelector('#recovery-form').addEventListener('submit',async event=>{
+      event.preventDefault();const form=event.currentTarget,button=form.querySelector('button'),message=document.querySelector('#recovery-message'),values=formPayload(form);
+      if(button.disabled)return;
+      if(mode==='reset'&&values.newPassword!==values.confirmPassword){message.textContent='Mật khẩu nhập lại chưa khớp.';return;}
+      const payload=mode==='request'?{username:values.username.trim()}:mode==='enroll'?{email:values.email.trim(),currentPassword:values.currentPassword}:mode==='reset'?{token,newPassword:values.newPassword}:{token};
+      await runButton(button,async()=>{
+        try {
+          const result=await rpc('auth.recovery.'+mode,payload);
+          if(sequence!==state.request)return;
+          form.reset();message.textContent=result.message;
+          if(mode==='reset'){setSessionToken('');state.user=null;}
+          if(mode==='verify'||mode==='reset')form.querySelector('button').remove();
+        } catch(error) {if(sequence===state.request){message.textContent=error.message;form.querySelectorAll('input[type=password]').forEach(node=>{node.value='';});}}
+      },'Đang xử lý…');
+    });
   }
   function showPasswordChange(required=Boolean(state.user&&state.user.mustChangePassword)) {
     if(!state.user)return;
@@ -412,13 +459,12 @@
   async function bootstrap() {
     const sequence=++state.request;state.passwordChange=false;app.innerHTML='<main id="page-content">'+loading('Đang kiểm tra phiên đăng nhập…')+'</main>';
     try {
-      const config=await rpc('auth.config');if(sequence!==state.request)return;state.config=config;
+      const initial=await rpc('auth.bootstrap');if(sequence!==state.request)return;state.config=initial.config;
       if(!state.sessionToken){showLogin(state.config.configured===false?'Quản trị viên chưa hoàn tất cấu hình tài khoản.':'');return;}
-      const session=await rpc('auth.session');if(sequence!==state.request)return;applySession(session);
+      if(state.config.configured===false){showLogin('Quản trị viên chưa hoàn tất cấu hình tài khoản.');return;}
+      const session=initial.session;applySession(session);
       if(state.user.mustChangePassword||session.mustChangePassword){state.user.mustChangePassword=true;showPasswordChange(true);return;}
-      const results=await Promise.allSettled([rpc('sources.list'),rpc('settings.get')]);if(sequence!==state.request)return;
-      if(results[0].status==='fulfilled')state.sources=array(results[0].value.items);else throw results[0].reason;
-      if(results[1].status==='fulfilled')state.settings=results[1].value;else throw results[1].reason;
+      state.sources=array(initial.sources.items);state.settings=initial.settings;
       await render();
     } catch(error) {
       if(sequence!==state.request)return;
@@ -429,9 +475,24 @@
     }
   }
   function updateCountdowns() {document.querySelectorAll('[data-countdown]').forEach(node=>{node.textContent=remaining(node.dataset.countdown);});}
+  // Keep internal navigation in the HTML Service iframe despite base target="_top".
+  document.addEventListener('click',event=>{
+    const anchor=event.target.closest?.('a[href^="#"]');
+    if(!anchor || anchor.hasAttribute('download') || (anchor.hasAttribute('target') && anchor.getAttribute('target')!=='_self'))return;
+    const target=anchor.getAttribute('href');
+    if(!Object.hasOwn(TITLES,target.slice(1).split('?')[0]))return;
+    event.preventDefault();
+    if(location.hash===target)render();else location.hash=target;
+  });
   window.addEventListener('hashchange',()=>{if(state.user)render();});
   document.addEventListener('keydown',event=>{if(event.key==='Escape'){document.querySelector('#sidebar')?.classList.remove('open');document.querySelector('#menu-toggle')?.setAttribute('aria-expanded','false');}});
   setInterval(updateCountdowns,30000);
-  bootstrap();
+  if(window.google?.script?.url?.getLocation) {
+    google.script.url.getLocation(locationInfo=>{
+      const params=locationInfo.parameter||{};
+      if(['verify','reset'].includes(params.recovery)&&/^tthc\.r\.[a-f0-9]{64}$/.test(params.token||''))showRecovery(params.recovery,params.token);
+      else bootstrap();
+    });
+  } else bootstrap();
 })();
 </script>

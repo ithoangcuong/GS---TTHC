@@ -4,7 +4,7 @@ import { createHmac, randomUUID, randomBytes } from 'node:crypto';
 
 export function gasRuntime(files = ['Utils', 'Crypto', 'Passwords', 'SheetRepository', 'Settings', 'Audit', 'Permissions', 'Users', 'Auth', 'Setup'], initialProperties = {}) {
   const properties = new Map(Object.entries({ SPREADSHEET_ID: 'SYNTHETIC_SHEET_123456', DATA_ENCRYPTION_KEY: randomBytes(64).toString('hex'), DATA_ENCRYPTION_KEY_ID: 'test-key-v1', EMAIL_PEPPER: 'e'.repeat(64), LOOKUP_PEPPER: 'l'.repeat(64), BOOTSTRAP_EMAIL: 'owner@example.test', BOOTSTRAP_USERNAME: 'admin', BOOTSTRAP_PASSWORD: 'SYNTHETIC-admin-2026!', DEFAULT_USER_PASSWORD: 'SYNTHETIC-default-2026!', ...initialProperties }));
-  const sheets = new Map(), calls = [], cacheValues = new Map();
+  const sheets = new Map(), calls = [], cacheValues = new Map(), mail = [];
   let locked = false, failingTable = null, failCount = 0, cryptoOffline = false;
   class Sheet {
     constructor(name) { this.name = name; this.rows = []; this.maxRows = 1000; this.maxColumns = 26; }
@@ -17,7 +17,7 @@ export function gasRuntime(files = ['Utils', 'Crypto', 'Passwords', 'SheetReposi
     setFrozenRows() {}
     getRange(startRow, startColumn, rowCount = 1, columnCount = 1) {
       return {
-        getValues: () => Array.from({ length: rowCount }, (_, i) => Array.from({ length: columnCount }, (_, j) => this.rows[startRow - 1 + i]?.[startColumn - 1 + j] ?? '')),
+        getValues: () => { calls.push({ op: 'read', table: this.name, startRow, rowCount }); return Array.from({ length: rowCount }, (_, i) => Array.from({ length: columnCount }, (_, j) => this.rows[startRow - 1 + i]?.[startColumn - 1 + j] ?? '')); },
         setValues: values => {
           calls.push({ op: 'write', table: this.name, startRow, rowCount, locked });
           if (this.name === failingTable && failCount > 0) { failCount--; throw new Error('Synthetic sheet write failure'); }
@@ -36,6 +36,7 @@ export function gasRuntime(files = ['Utils', 'Crypto', 'Passwords', 'SheetReposi
     throw new Error('Unexpected external request in local GAS harness');
   };
   const context = createContext({
+    MailApp: { getRemainingDailyQuota: () => 100, sendEmail: message => mail.push(message) },
     console: { log() {} },
     Utilities: {
       getUuid: randomUUID, Charset: { UTF_8: 'UTF-8' },
@@ -72,5 +73,5 @@ export function gasRuntime(files = ['Utils', 'Crypto', 'Passwords', 'SheetReposi
       context.TthcCipher = { ...context.TthcCipher, aessiv: trackedCipher };
     }
   });
-  return { context, app: context.TTHC, properties, sheets, calls, cache, workbook, plain: value => JSON.parse(JSON.stringify(value)), failWrites: (table, count = 1) => { failingTable = table; failCount = count; }, setCryptoOffline: value => { cryptoOffline = value; } };
+  return { context, app: context.TTHC, properties, sheets, calls, cache, mail, clearCache: () => cacheValues.clear(), workbook, plain: value => JSON.parse(JSON.stringify(value)), failWrites: (table, count = 1) => { failingTable = table; failCount = count; }, setCryptoOffline: value => { cryptoOffline = value; } };
 }

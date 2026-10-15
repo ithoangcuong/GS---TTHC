@@ -6,6 +6,74 @@ import { gasRuntime } from './helpers/apps-script.mjs';
 const MODULES = ['Utils','Crypto','Passwords','SheetRepository','Settings','Audit','Permissions','Users','Sources','Deadline','Cases','Alerts','Dashboard','Reports','Auth','Router','Code','Setup'];
 const ALL = { sources: ['*'], agencies: ['*'], departments: ['*'], officers: ['*'] };
 const iso = offset => new Date(Date.now() + offset * 3600000).toISOString();
+test('latest complete MOC read replaces visible membership atomically without accumulating old alerts', () => {
+  const gas = harness();
+  const token = gas.evaluate(`TTHC.Auth.createCollector(${gas.actor()},{sourceSystem:'MOC',hostname:'motcuabxd.moc.gov.vn'})`).token;
+  const payload = (id, codes, offset) => ({ action: 'collector.sync', sourceSystem: 'MOC', hostname: 'motcuabxd.moc.gov.vn', token, batchId: id, replaceSource: true,
+    collectionContext: { submittedFrom: null, submittedTo: null, capturedAt: iso(offset), basis: 'VISIBLE_FILTERS', scope: 'CURRENT_PAGE_ONLY' },
+    cases: codes.map(code => record(code, { sourceSystem: 'MOC', sourceStatus: 'Đang xử lý', lastObservedAt: iso(offset) })) });
+  const first = payload('snapshot-first', ['OLD', 'KEEP'], -3);
+  gas.run('Cases', 'sync', first);
+  const list = () => gas.evaluate(`TTHC.Cases.list(${gas.actor()},{sourceSystem:'MOC'})`);
+  const oldId = list().items.find(row => row.caseCode === 'OLD').id;
+  gas.sync(gas.issue().token, [record('OTHER-SOURCE')]);
+  gas.run('Cases', 'sync', payload('snapshot-second', ['KEEP','NEW'], -2));
+  assert.deepEqual(list().items.map(row => row.caseCode).sort(), ['KEEP','NEW']);
+  assert.equal(gas.evaluate(`TTHC.Dashboard.summary(${gas.actor()},{sourceSystem:'MOC'})`).kpis.total, 2);
+  assert.equal(gas.evaluate(`TTHC.Cases.list(${gas.actor()},{sourceSystem:'TPHCM'})`).total, 1);
+  assert.ok(gas.evaluate(`TTHC.Alerts.list(${gas.actor()},{sourceSystem:'MOC'})`).items.every(row => row.caseCode !== 'OLD'));
+  assert.throws(() => gas.evaluate(`TTHC.Cases.detail(${gas.actor()},{id:${JSON.stringify(oldId)}})`));
+  assert.equal(gas.run('Cases', 'sync', first).duplicateBatch, true);
+  assert.deepEqual(list().items.map(row => row.caseCode).sort(), ['KEEP','NEW']);
+  const broken = payload('snapshot-broken', ['NEW','BAD'], -1); broken.cases[1].caseCode = '';
+  assert.throws(() => gas.run('Cases','sync',broken));
+  assert.deepEqual(list().items.map(row => row.caseCode).sort(), ['KEEP','NEW']);
+  assert.throws(() => gas.run('Cases','sync',payload('snapshot-stale',['OLD'],-4)));
+  assert.throws(() => gas.run('Cases','sync',payload('snapshot-empty',[],-1)));
+  assert.throws(() => gas.run('Cases','sync',payload('snapshot-duplicate',['NEW','NEW'],-1)));
+});
+test('submitted date filters use Vietnam full-day boundaries consistently for dashboard and cases', () => {
+  const gas = harness(), token = gas.issue().token;
+  gas.sync(token, [
+    record('BEFORE', { submittedAt: '2026-10-01T16:59:59.999Z' }),
+    record('START', { submittedAt: '2026-10-01T17:00:00.000Z' }),
+    record('END', { submittedAt: '2026-10-02T16:59:59.999Z' }),
+    record('AFTER', { submittedAt: '2026-10-02T17:00:00.000Z' }),
+    record('MISSING'),
+  ]);
+  const query = { submittedFrom: '2026-10-02', submittedTo: '2026-10-02' };
+  const list = q => gas.evaluate(`TTHC.Cases.list(${gas.actor()},${JSON.stringify(q)})`);
+  const dashboard = q => gas.evaluate(`TTHC.Dashboard.summary(${gas.actor()},${JSON.stringify(q)})`);
+  assert.deepEqual(list(query).items.map(row => row.caseCode).sort(), ['END','START']);
+  assert.equal(dashboard(query).kpis.total, 2);
+  assert.equal(dashboard(query).bySource[0].total, 2);
+  assert.equal(dashboard({ submittedFrom: '2026-10-03' }).kpis.total, 1);
+  assert.equal(list({ submittedTo: '2026-10-01' }).total, 1);
+  assert.equal(list({}).total, 5);
+  assert.throws(() => dashboard({ submittedFrom: '2026-10-03', submittedTo: '2026-10-02' }));
+  assert.throws(() => list({ submittedFrom: '2026-02-31' }));
+});
+test('collection range persists per batch and per case; older batches remain explicit unknown', () => {
+  const gas = harness(), token = gas.issue().token;
+  const context = { submittedFrom: '2026-10-01', submittedTo: '2026-10-12', capturedAt: iso(-1), scope: 'CURRENT_PAGE_ONLY', basis: 'VISIBLE_FILTERS' };
+  const payload = { action: 'collector.sync', token, sourceSystem: 'TPHCM', hostname: 'motcua.tphcm.gov.vn', cases: [record('RANGE')], batchId: 'range-test', collectionContext: context };
+  const saved = gas.run('Cases', 'sync', payload);
+  assert.equal(saved.created, 1);
+  const logs = () => gas.evaluate(`TTHC.Sources.syncList(${gas.actor()},{})`).items;
+  assert.deepEqual(logs()[0].collectionContext, context);
+  assert.deepEqual(gas.evaluate(`TTHC.Cases.list(${gas.actor()},{})`).items[0].lastCollectionContext, context);
+  assert.equal(gas.run('Cases', 'sync', payload).duplicateBatch, true);
+  assert.equal(logs().length, 1);
+  for (const bad of [{ ...context, submittedTo: '2026-02-31' }, { ...context, submittedFrom: '2026-11-01' }, { ...context, extra: 'private' }]) {
+    assert.throws(() => gas.run('Cases', 'sync', { ...payload, batchId: 'bad-context', collectionContext: bad }));
+  }
+  gas.sync(token, [record('LEGACY')], 'legacy-range');
+  assert.equal(logs().find(row => row.batchId === 'legacy-range').collectionContext, null);
+  const later = { ...context, submittedTo: '2026-10-13', capturedAt: iso(0) };
+  gas.run('Cases', 'sync', { ...payload, cases: [record('RANGE', { lastObservedAt: iso(0) })], batchId: 'range-next', collectionContext: later });
+  assert.deepEqual(logs().find(row => row.batchId === 'range-test').collectionContext, context);
+  assert.deepEqual(logs().find(row => row.batchId === 'range-next').collectionContext, later);
+});
 const record = (code = 'MONITOR-01', extra = {}) => ({ sourceSystem: 'TPHCM', caseCode: code, sourceRecordId: 'source-' + code, procedureName: 'Thủ tục giám sát', agencyName: 'Đơn vị A', departmentName: 'Phòng A', officerName: 'Cán bộ A', sourceStatus: extra.normalizedStatus || 'PROCESSING', normalizedStatus: 'PROCESSING', originalDueAt: iso(24), receivedAt: iso(-72), lastObservedAt: iso(-1), ...extra });
 function harness() {
   const gas = gasRuntime(MODULES);
@@ -56,6 +124,7 @@ test('GAS MOC collector tokens accept both supported hosts while remaining bound
     const token = gas.evaluate(`TTHC.Auth.createCollector(${gas.actor()},${JSON.stringify({ sourceSystem: 'MOC', hostname })})`);
     assert.equal(token.hostname, hostname);
     const payload = { action: 'collector.sync', token: token.token, sourceSystem: 'MOC', hostname,
+      replaceSource: true, collectionContext: { submittedFrom: null, submittedTo: null, capturedAt: new Date().toISOString(), basis: 'VISIBLE_FILTERS', scope: 'CURRENT_PAGE_ONLY' },
       cases: [record('MOC-' + hostname, { sourceSystem: 'MOC' })], batchId: crypto.randomUUID() };
     assert.equal(gas.run('Cases', 'sync', payload).created, 1);
     assert.throws(() => gas.run('Cases', 'sync', { ...payload, hostname: hostname === 'motcuabxd.moc.gov.vn' ? 'motcua.moc.gov.vn' : 'motcuabxd.moc.gov.vn', batchId: crypto.randomUUID() }), { code: 'TOKEN_INVALID' });
@@ -171,7 +240,10 @@ test('GAS warning/overdue/stale alerts are current and acknowledgments require c
 
 test('GAS dashboard encrypted cache avoids CASES scans on repeated opens and invalidates on sync', () => {
   const gas = harness(), token = gas.issue(); gas.sync(token.token, [record('A'), record('B', { lastObservedAt: iso(-30) })]);
+  gas.clearCache();
+  gas.calls.length = 0;
   const initial = gas.evaluate(`TTHC.Dashboard.summary(${gas.actor()},{})`); assert.equal(initial.kpis.totalProcessing, 2); assert.equal(initial.kpis.observed24hRate, 50);
+  assert.equal(gas.calls.filter(call => call.op === 'write').length, 0, 'Cold dashboard reads must never write Sheets');
   const original = gas.app.Repo.read; let scans = 0;
   gas.app.Repo.read = table => { if (table === 'CASES') scans++; return original(table); };
   assert.equal(gas.evaluate(`TTHC.Dashboard.summary(${gas.actor()},{})`).kpis.total, 2); assert.equal(scans, 0);

@@ -89,6 +89,14 @@ function backupSpreadsheet_() {
   return { spreadsheetId: backup.getId(), url: backup.getUrl(), encryptedPayloadsPreserved: true };
 }
 
+function enableRecoveryEmail_() {
+  requireSetupOwner_();
+  var remaining = MailApp.getRemainingDailyQuota();
+  if (!TTHC.Auth.config().webAppUrl) TTHC.Utils.error('CONFIGURATION_ERROR', 'Cần cấu hình WEB_APP_URL trước khi bật email khôi phục.');
+  PropertiesService.getScriptProperties().setProperty('RECOVERY_EMAIL_ENABLED', 'true');
+  return { enabled: true, remainingDailyQuota: remaining, testEmailSent: false };
+}
+
 function verifyCrypto_() {
   requireSetupOwner_();
   var probe = { marker: 'TTHC_MONITOR_CONFIGURATION_CHECK', checkedAt: TTHC.Utils.now() };

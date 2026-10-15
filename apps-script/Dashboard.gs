@@ -73,21 +73,20 @@ TTHC.Dashboard = (function () {
   }
   function summary(actor, query) {
     query = query || {};
-    var allowed = ['q', 'sourceSystem', 'agencyName', 'departmentName', 'officerName', 'procedureName', 'agencyKey', 'departmentKey', 'officerKey', 'procedureKey', 'receivedFrom', 'receivedTo', 'dueFrom', 'dueTo'];
+    var allowed = ['q', 'sourceSystem', 'agencyName', 'departmentName', 'officerName', 'procedureName', 'agencyKey', 'departmentKey', 'officerKey', 'procedureKey', 'submittedFrom', 'submittedTo', 'receivedFrom', 'receivedTo', 'dueFrom', 'dueTo'];
     if (!query || typeof query !== 'object' || Array.isArray(query) || Object.keys(query).some(function (field) { return allowed.indexOf(field) < 0; })) TTHC.Utils.error('VALIDATION_ERROR', 'Bộ lọc dashboard không hợp lệ.');
     var authorization = TTHC.Repo.readSnapshot(['USERS']);
     actor = TTHC.Users.authorize(actor.id, authorization.tables.USERS);
     var key = cacheKey(actor, query), revision = authorization.revision, now = Date.now(), memory = CacheService.getScriptCache(), item = null;
     try { item = JSON.parse(memory.get('dashboard:' + key) || 'null'); } catch (ignored) {}
-    if (!item || Number(item.revision) !== Number(revision) || Date.parse(item.expires_at) <= now) item = TTHC.Repo.read('DASHBOARD_CACHE').find(function (row) { return row.cache_key === key && Number(row.revision) === Number(revision) && Date.parse(row.expires_at) > now; });
     if (item && Number(item.revision) === Number(revision) && Date.parse(item.expires_at) > now) return TTHC.Crypto.decrypt(item.payload_encrypted);
     var snapshot = TTHC.Repo.readSnapshot(['CASES', 'SOURCES', 'USERS']), current = TTHC.Users.authorize(actor.id, snapshot.tables.USERS), settings = TTHC.Settings.get();
     // Read metadata indexes once. Only representatives for the largest groups need decryption.
     var result = build(current, query, snapshot.tables.CASES, snapshot.tables.SOURCES, settings, now);
     var row = { cache_key: cacheKey(current, query), payload_encrypted: TTHC.Crypto.encrypt(result), crypto_version: TTHC.Crypto.cryptoVersion, expires_at: result.cacheUntil, updated_at: result.generatedAt, revision: snapshot.revision };
-    TTHC.Repo.commit([{ table: 'DASHBOARD_CACHE', keyField: 'cache_key', rows: [row] }], snapshot.revision);
     var ttl = Math.max(1, Math.floor((Date.parse(row.expires_at) - Date.now()) / 1000));
-    memory.put('dashboard:' + row.cache_key, JSON.stringify(row), Math.min(60, ttl));
+    // Cache is optional: a read must not acquire the write lock or write a Sheet.
+    try { memory.put('dashboard:' + row.cache_key, JSON.stringify(row), Math.min(60, ttl)); } catch (ignored) {}
     return result;
   }
   function officers(actor, query) {

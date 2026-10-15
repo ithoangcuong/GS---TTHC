@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Giám sát hồ sơ TTHC — Collector",
-  "version": "0.3.0",
+  "version": "0.7.0",
   "description": "Collector thủ công, xác nhận đăng nhập và cấu hình nguồn trước khi đọc hồ sơ.",
   "minimum_chrome_version": "120",
   "permissions": [
     "storage",
     "activeTab",
-    "alarms"
+    "alarms",
+    "scripting"
   ],
   "host_permissions": [
     "https://motcua.tphcm.gov.vn/*",
@@ -23,7 +24,8 @@
     "https://dichvucong.bvhttdl.gov.vn/*",
     "https://gqtthc.bdttg.gov.vn/*",
     "https://script.google.com/macros/s/*",
-    "https://script.googleusercontent.com/*"
+    "https://script.googleusercontent.com/*",
+    "https://n-aqvzizvfpztqprh75rg5zq5yehraj4xv4vezeci-0lu-script.googleusercontent.com/*"
   ],
   "background": {
     "service_worker": "background/service-worker.mjs",

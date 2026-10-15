@@ -33,12 +33,14 @@ function verifyAppsScriptResponse(response, endpoint) {
 }
 
 const API_ERRORS = Object.freeze({ TOKEN_INVALID: 'Collector token hết hạn hoặc không hợp lệ.',
+  COLLECTOR_UPDATE_REQUIRED: 'Cần tải lại Collector 0.7.0 và trang MOC để dùng chế độ thay thế lần đọc mới nhất.',
+  SNAPSHOT_INCOMPLETE: 'Chưa thay thế MOC: máy chủ phát hiện hồ sơ lỗi, trùng mã hoặc quan sát cũ. Dữ liệu lần thành công trước vẫn được giữ.',
   AUTH_REQUIRED: 'Cần đăng nhập dashboard và cấp lại collector token.', ACCESS_DENIED: 'Tài khoản/token không có quyền đồng bộ nguồn này.',
   VALIDATION_ERROR: 'Payload hồ sơ không hợp lệ.', SOURCE_DISABLED: 'Nguồn đã bị tắt trên hệ thống trung tâm.',
   CONFIGURATION_ERROR: 'Apps Script chưa được cấu hình đầy đủ.', CONFLICT: 'Batch xung đột với dữ liệu đã ghi.' });
 
 /** Stable batchId across retries. Redirection and portal credentials are never forwarded. */
-export async function sendBatch({ centralUrl, token, sourceSystem, hostname, records, cases, batchId }, {
+export async function sendBatch({ centralUrl, token, sourceSystem, hostname, records, cases, batchId, collectionContext, replaceSource }, {
   fetchImpl = fetch, sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)), retries = 3,
   timeoutMs = 15000,
 } = {}) {
@@ -46,12 +48,12 @@ export async function sendBatch({ centralUrl, token, sourceSystem, hostname, rec
   if (typeof token !== 'string' || token.length < 16 || token.length > 4096 || /\s/.test(token)) throw new Error('Cần collector token hợp lệ từ hệ thống trung tâm.');
   if (/^(?:ya29\.|AIza|eyJ)/.test(token)) throw new Error('Chỉ dùng collector token do TTHC MONITOR cấp, không dùng Google token.');
   records = cases ?? records;
-  if (!Array.isArray(records) || records.length > BATCH_SIZE || !batchId) throw new Error('Batch không hợp lệ.');
+  if (!Array.isArray(records) || records.length > (gas && sourceSystem === 'MOC' && replaceSource === true ? 200 : BATCH_SIZE) || !batchId) throw new Error('Batch không hợp lệ.');
   if (typeof batchId !== 'string' || batchId.length > 200 || !/^[A-Za-z0-9:_-]+$/.test(batchId)) throw new Error('Batch ID không hợp lệ.');
   const source = sourceById(sourceSystem);
   if (!source || (gas && !source.supportedHosts.includes(hostname))) throw new Error('Hostname không khớp nguồn batch.');
   const payload = gas ? records.map(record => normalizeCollectorCase(record, sourceSystem)) : records;
-  const body = JSON.stringify(gas ? { action: 'collector.sync', token, sourceSystem, hostname, cases: payload, batchId }
+  const body = JSON.stringify(gas ? { action: 'collector.sync', token, sourceSystem, hostname, cases: payload, batchId, collectionContext, ...(replaceSource === true ? { replaceSource: true } : {}) }
     : { sourceSystem, records, batchId });
   for (let attempt = 0; attempt <= retries; attempt++) {
     let retryable = true;

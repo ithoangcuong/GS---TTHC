@@ -20,7 +20,7 @@ TTHC.Auth = (function () {
       else if (typeof value !== 'string' || !check[1](value)) issues.push({ property: check[0], reason: 'invalid' });
     });
     var url = props.getProperty('WEB_APP_URL') || '';
-    return { appName: 'TTHC Monitor', timeZone: 'Asia/Ho_Chi_Minh', timezone: 'Asia/Ho_Chi_Minh', authMode: 'password', configured: issues.length === 0, setupIssues: issues, webAppUrl: webAppPattern.test(url) ? url : null };
+    return { appName: 'TTHC Monitor', timeZone: 'Asia/Ho_Chi_Minh', timezone: 'Asia/Ho_Chi_Minh', authMode: 'password', configured: issues.length === 0, setupIssues: issues, recoveryEmailEnabled: props.getProperty('RECOVERY_EMAIL_ENABLED') === 'true', webAppUrl: webAppPattern.test(url) ? url : null };
   }
   function requireConfigured() {
     var readiness = config();
@@ -129,5 +129,92 @@ TTHC.Auth = (function () {
     cache().remove(key('attempts', TTHC.Users.normalizeUsername(username)));
     if (userId) cache().remove(key('attempts', 'change:' + userId));
   }
-  return { config: config, login: login, authenticate: authenticate, session: session, logout: logout, changePassword: changePassword, clearLoginAttempts: clearLoginAttempts, createCollector: createCollector, collector: collector, revokeCollector: revokeCollector };
+  return { config: config, login: login, authenticate: authenticate, session: session, logout: logout, changePassword: changePassword, clearLoginAttempts: clearLoginAttempts, createCollector: createCollector, collector: collector, revokeCollector: revokeCollector, recoveryThrottle: function (value) { attempts('recovery:' + value); } };
+})();
+
+TTHC.Recovery = (function () {
+  var PREFIX = 'recovery:', TTL = 15 * 60 * 1000;
+  var GENERIC = 'Nếu tài khoản có email đã xác minh, liên kết đặt lại mật khẩu sẽ được gửi đến email đó. Hãy kiểm tra cả thư rác. Nếu chưa xác minh email, hãy liên hệ quản trị viên.';
+  function invalid() { TTHC.Utils.error('RECOVERY_INVALID', 'Liên kết không hợp lệ, đã hết hạn hoặc đã được sử dụng. Hãy yêu cầu liên kết mới.'); }
+  function ready() {
+    var config = TTHC.Auth.config();
+    if (!config.recoveryEmailEnabled || !config.webAppUrl) TTHC.Utils.error('RECOVERY_UNAVAILABLE', 'Chức năng email chưa được quản trị viên kích hoạt. Vui lòng liên hệ quản trị viên để đặt lại mật khẩu.');
+    return config.webAppUrl;
+  }
+  function key(kind, id) { return PREFIX + kind + ':' + id; }
+  function value(rows, name) { var row = rows.find(function (item) { return item.key === name; }); return row && row.value ? TTHC.Crypto.decrypt(row.value) : null; }
+  function setting(name, data) { return { key: name, value: TTHC.Crypto.encrypt(data), updated_at: TTHC.Utils.now() }; }
+  function findTicket(rows, token, kind) {
+    if (typeof token !== 'string' || !/^tthc\.r\.[a-f0-9]{64}$/.test(token)) invalid();
+    var hash = TTHC.Crypto.hashLookupKey('recovery-token:' + token), found;
+    rows.filter(function (row) { return row.key.indexOf(key(kind, '')) === 0; }).some(function (row) {
+      var item = TTHC.Crypto.decrypt(row.value);
+      if (item.tokenHash === hash) { found = { row: row, item: item }; return true; }
+      return false;
+    });
+    if (!found || found.item.used || !Number.isFinite(found.item.expiresAt) || found.item.expiresAt <= Date.now()) invalid();
+    return found;
+  }
+  function issue(kind, row, email, snapshot) {
+    var url = ready(), token = 'tthc.r.' + TTHC.Crypto.hashLookupKey('recovery-secret:' + TTHC.Utils.id() + ':' + TTHC.Utils.id());
+    var ticket = { userId: row.user_id, credentialVersion: row.credential_version, tokenHash: TTHC.Crypto.hashLookupKey('recovery-token:' + token), email: email, expiresAt: Date.now() + TTL, used: false };
+    TTHC.Repo.commit([{ table: 'SETTINGS', keyField: 'key', rows: [setting(key(kind, row.user_id), ticket)] }], snapshot.revision);
+    try {
+      MailApp.sendEmail({ to: email, subject: kind === 'verify' ? 'TTHC Monitor – Xác minh email khôi phục' : 'TTHC Monitor – Đặt lại mật khẩu', name: 'TTHC Monitor', body: 'Bạn đã yêu cầu ' + (kind === 'verify' ? 'xác minh email khôi phục.' : 'đặt lại mật khẩu.') + '\n\nMở liên kết sau để tiếp tục (có hiệu lực 15 phút, dùng một lần):\n' + url + '?recovery=' + kind + '&token=' + token + '\n\nNếu bạn không yêu cầu, hãy bỏ qua thư này. Không chia sẻ liên kết cho người khác.' });
+    } catch (_) { TTHC.Utils.error('RECOVERY_MAIL_FAILED', 'Chưa gửi được email. Vui lòng thử lại sau hoặc liên hệ quản trị viên.'); }
+  }
+  function request(payload) {
+    ready();
+    var username = TTHC.Users.normalizeUsername(payload.username);
+    TTHC.Auth.recoveryThrottle('reset:' + username);
+    var snapshot = TTHC.Repo.readSnapshot(['USERS','SETTINGS']), row = TTHC.Users.byUsername(username, snapshot.tables.USERS);
+    if (row && row.status === 'ACTIVE' && TTHC.Permissions.roleValid(row.role)) {
+      var verified = value(snapshot.tables.SETTINGS, key('email', row.user_id));
+      if (verified && verified.verifiedAt && verified.email) {
+        try { issue('reset', row, verified.email, snapshot); }
+        catch (error) { TTHC.Utils.log('ERROR', 'RECOVERY_DELIVERY_FAILED', { code: error.code || 'RECOVERY_MAIL_FAILED' }); }
+      }
+    }
+    return { message: GENERIC };
+  }
+  function status(actor) {
+    var verified = value(TTHC.Repo.read('SETTINGS'), key('email', actor.id));
+    return { email: verified && verified.email || '', verified: !!(verified && verified.verifiedAt), enabled: TTHC.Auth.config().recoveryEmailEnabled };
+  }
+  function enroll(actor, payload) {
+    ready(); TTHC.Auth.recoveryThrottle('verify:' + actor.id);
+    var email = TTHC.Utils.normalizeEmail(payload.email);
+    if (typeof payload.currentPassword !== 'string' || payload.currentPassword.length > 128) TTHC.Utils.error('VALIDATION_ERROR', 'Mật khẩu hiện tại không hợp lệ.');
+    var snapshot = TTHC.Repo.readSnapshot(['USERS','SETTINGS']), row = TTHC.Users.byId(actor.id, snapshot.tables.USERS);
+    TTHC.Users.validateRow(row);
+    if (row.credential_version !== actor.credentialVersion || !TTHC.Passwords.verify(payload.currentPassword, row.password_hash)) TTHC.Utils.error('AUTH_INVALID', 'Mật khẩu hiện tại không đúng hoặc phiên đã thay đổi.');
+    issue('verify', row, email, snapshot);
+    return { message: 'Đã gửi liên kết xác minh. Hãy mở email và xác nhận trong 15 phút.' };
+  }
+  function verify(payload) {
+    var snapshot = TTHC.Repo.readSnapshot(['USERS','SETTINGS']), ticket = findTicket(snapshot.tables.SETTINGS, payload.token, 'verify'), item = ticket.item;
+    var row = TTHC.Users.byId(item.userId, snapshot.tables.USERS); TTHC.Users.validateRow(row);
+    if (row.credential_version !== item.credentialVersion) invalid();
+    var now = TTHC.Utils.now(), changes = [setting(ticket.row.key, { used: true }), setting(key('email', row.user_id), { email: item.email, verifiedAt: now }), setting(key('reset', row.user_id), { used: true })];
+    TTHC.Repo.commit([{ table: 'SETTINGS', keyField: 'key', rows: changes }], snapshot.revision);
+    return { message: 'Email đã được xác minh. Bạn có thể dùng Quên mật khẩu khi cần.' };
+  }
+  function reset(payload) {
+    TTHC.Passwords.validate(payload.newPassword);
+    var snapshot = TTHC.Repo.readSnapshot(['USERS','SETTINGS','COLLECTOR_TOKENS']), ticket = findTicket(snapshot.tables.SETTINGS, payload.token, 'reset'), item = ticket.item;
+    var row = TTHC.Users.byId(item.userId, snapshot.tables.USERS), verified = value(snapshot.tables.SETTINGS, key('email', item.userId));
+    TTHC.Users.validateRow(row);
+    if (row.credential_version !== item.credentialVersion || !verified || verified.email !== item.email) invalid();
+    if (TTHC.Passwords.verify(payload.newPassword, row.password_hash)) TTHC.Utils.error('VALIDATION_ERROR', 'Mật khẩu mới phải khác mật khẩu hiện tại.');
+    var defaultPassword; try { defaultPassword = TTHC.Passwords.defaultPassword(); } catch (error) { if (error.code !== 'CONFIGURATION_ERROR') throw error; }
+    if (payload.newPassword === defaultPassword) TTHC.Utils.error('VALIDATION_ERROR', 'Mật khẩu mới phải khác mật khẩu mặc định.');
+    var now = TTHC.Utils.now(), updated = Object.assign({}, row, { password_hash: TTHC.Passwords.hash(payload.newPassword), must_change_password: false, credential_version: TTHC.Utils.id(), password_changed_at: now, updated_at: now });
+    var revoked = snapshot.tables.COLLECTOR_TOKENS.filter(function (token) { return token.user_id === row.user_id && token.status === 'ACTIVE'; }).map(function (token) { return Object.assign({}, token, { status: 'REVOKED', revoked_at: now }); });
+    var changes = [{ table: 'USERS', keyField: 'user_id', rows: [updated] }, { table: 'SETTINGS', keyField: 'key', rows: [setting(ticket.row.key, { used: true })] }];
+    if (revoked.length) changes.push({ table: 'COLLECTOR_TOKENS', keyField: 'token_hash', rows: revoked });
+    TTHC.Repo.commit(changes, snapshot.revision);
+    TTHC.Auth.clearLoginAttempts(TTHC.Crypto.decrypt(row.username_encrypted), row.user_id);
+    return { message: 'Đã đặt lại mật khẩu. Hãy đăng nhập bằng mật khẩu mới.' };
+  }
+  return { request: request, status: status, enroll: enroll, verify: verify, reset: reset };
 })();

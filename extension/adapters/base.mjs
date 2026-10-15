@@ -1,4 +1,5 @@
 import { sourceById } from './source-registry.mjs';
+import { validateMocProfile } from './moc-profile.mjs';
 import { parseTimestamp } from '../shared/normalize.mjs';
 import { COLLECTOR_FIELDS, COLLECTOR_STATUSES, normalizeCollectorCase } from '../normalizer/case-normalizer.mjs';
 
@@ -9,7 +10,7 @@ export const TPHCM_HEADER_MAPPINGS = Object.freeze({
   'Ngày tiếp nhận': 'receivedAt', 'Ngày hẹn trả': 'dueAt',
   'Cơ quan thực hiện': 'agencyName', 'Cán bộ xử lý': 'officerName', 'Trạng thái': 'sourceStatus',
 });
-const READABLE_FIELDS = new Set(['sourceRecordId', 'sourceCaseId', 'caseCode', 'procedureCode', 'procedureName',
+export const READABLE_FIELDS = new Set(['sourceRecordId', 'sourceCaseId', 'caseCode', 'procedureCode', 'procedureName',
   'submittedAt', 'receivedAt', 'originalDueAt', 'dueAt', 'completedAt',
   'agencyId', 'agencyName', 'departmentId', 'departmentName', 'officerId', 'officerName', 'sourceStatus',
   'currentStep', 'totalSteps']);
@@ -20,6 +21,7 @@ const plain = value => value && typeof value === 'object' && !Array.isArray(valu
 export function validateAdapterConfig(config, sourceSystem) {
   const source = sourceById(sourceSystem);
   if (!source || !plain(config) || config.sourceSystem !== sourceSystem) throw new Error('Cấu hình nguồn không hợp lệ.');
+  if (config.profile !== undefined) return validateMocProfile(config);
   const allowedKeys = ['sourceSystem', 'verified', 'evidence', 'listUrl', 'loggedInSelector', 'loggedOutSelector',
     'tableSelector', 'headerSelector', 'rowSelector', 'cellSelector', 'headerMappings', 'statusMappings'];
   if (Object.keys(config).some(key => !allowedKeys.includes(key)) || (plain(config.evidence)
@@ -53,6 +55,8 @@ export function validateAdapterConfig(config, sourceSystem) {
 export function recordsFromCells(headers, rows, mappings) {
   const columns = headers.map(header => Object.prototype.hasOwnProperty.call(mappings, TEXT(header)) ? mappings[TEXT(header)] : null);
   if (!columns.includes('caseCode')) throw new Error('Bảng hiện tại không có header mã hồ sơ đã cấu hình.');
+  const missing = [...new Set(Object.values(mappings))].filter(field => !columns.includes(field));
+  if (missing.length) throw new Error(`Bảng thiếu cột đã cấu hình: ${missing.join(', ')}. Kiểm tra lại bảng hoặc mapping.`);
   const mapped = columns.filter(Boolean);
   if (new Set(mapped).size !== mapped.length) throw new Error('Các header trùng canonical field; cần sửa cấu hình.');
   return rows.map((cells, index) => {
@@ -63,13 +67,13 @@ export function recordsFromCells(headers, rows, mappings) {
   });
 }
 
-function visible(element) {
+export function visible(element) {
   if (!element || element.hidden || element.getAttribute?.('aria-hidden') === 'true' || element.getClientRects().length === 0) return false;
   const view = element.ownerDocument?.defaultView;
   const style = view?.getComputedStyle?.(element);
   return !style || (style.visibility !== 'hidden' && style.visibility !== 'collapse' && style.display !== 'none' && style.opacity !== '0');
 }
-function visibleText(element) {
+export function visibleText(element) {
   // innerText excludes non-rendered descendant text; no input values or attributes are read.
   return typeof element.innerText === 'string' ? element.innerText : element.textContent;
 }

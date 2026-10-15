@@ -1,8 +1,18 @@
 <!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collector hồ sơ</title><link rel="stylesheet" href="../ui.css"></head>
 <body class="popup"><h1>Collector hồ sơ</h1><p id="portal">Đang kiểm tra portal…</p><p id="status" role="status"></p>
-<button id="sync" disabled>Đồng bộ trang hiện tại</button><button id="resume" hidden>Gửi lại batch lỗi</button>
-<p class="note">Chỉ đọc bảng trên trang đang mở sau khi xác nhận đăng nhập và selector đã kiểm chứng. Phân trang thủ công; mở từng trang rồi đồng bộ.</p>
-<details><summary>Kết nối hệ thống trung tâm</summary><form id="central"><label>URL Apps Script Web App<input id="url" type="url" placeholder="https://script.google.com/macros/s/DEPLOYMENT/exec" required></label>
+<form id="moc-setup" hidden>
+<p>Bộ đọc dành cho bảng <strong>Tra cứu hồ sơ toàn cơ quan</strong> của Bộ Xây dựng.</p>
+<label><input id="moc-confirm" type="checkbox" required> Tôi đã đăng nhập và đang xem bảng hồ sơ được phép truy cập.</label>
+<button type="submit">Nhận diện và đọc thử bảng Bộ Xây dựng</button>
+<p class="note">Tự nhận diện cột, không cần nhập selector. Chỉ lưu bộ đọc khi đọc được hồ sơ hợp lệ; chưa gửi dữ liệu lên hệ thống.</p>
+</form>
+<button id="preview" disabled>Đọc thử dữ liệu</button><button id="sync" disabled>Đọc và ghi lên hệ thống</button><button id="resume" hidden>Gửi lại batch lỗi</button>
+<p id="save-status" role="status" aria-live="polite"></p>
+<button id="view-dashboard" hidden>Xem hồ sơ đã lưu trên Dashboard</button>
+<pre id="preview-result" aria-live="polite"></pre>
+<p class="note">Chỉ đọc bảng trên trang đang mở sau khi xác nhận đăng nhập và cấu hình bộ đọc. Phân trang thủ công; mở từng trang rồi đồng bộ.</p>
+<p class="note">Không cần nhập URL hoặc token. Extension dùng Dashboard TTHC MONITOR đã đăng nhập; nếu chưa đăng nhập, Dashboard sẽ được mở để bạn đăng nhập.</p>
+<details><summary>Kết nối nâng cao (hệ thống khác)</summary><form id="central"><label>URL Apps Script Web App<input id="url" type="url" placeholder="https://script.google.com/macros/s/DEPLOYMENT/exec" required></label>
 <label>Collector token<input id="token" type="password" autocomplete="off" required></label><p class="note">Đăng nhập Dashboard, tạo collector token cho nguồn đang mở rồi dán vào đây. Không dùng Google access token/ID token hay thông tin đăng nhập portal. Token chỉ giữ trong phiên trình duyệt.</p><button type="submit">Lưu kết nối</button></form><button id="clear">Xóa token trong phiên</button></details>
 <button id="options">Cấu hình adapter đã kiểm chứng</button><pre id="result"></pre><script type="module" src="popup.mjs"></script></body></html>

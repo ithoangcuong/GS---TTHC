@@ -2,6 +2,28 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gasRuntime } from './helpers/apps-script.mjs';
 
+test('request reads are isolated, refreshed on revision/lock changes and fail closed', () => {
+  const gas = gasRuntime(); gas.context.setupTthcMonitor_();
+  const repo = gas.app.Repo;
+  repo.withRequest(() => {
+    const rows = repo.read('SOURCES'), id = rows[0].source_id;
+    rows[0].name = 'not saved';
+    assert.notEqual(repo.read('SOURCES')[0].name, 'not saved');
+    repo.writeBatch('SOURCES', [{ ...repo.read('SOURCES')[0], name: 'Saved' }], 'source_id');
+    assert.equal(repo.read('SOURCES').find(row => row.source_id === id).name, 'Saved');
+    const nameColumn = repo.schemas.SOURCES.indexOf('name');
+    gas.sheets.get('SOURCES').rows[1][nameColumn] = 'Concurrent update';
+    gas.properties.set('DATA_REVISION', String(repo.revision() + 1));
+    assert.equal(repo.read('SOURCES')[0].name, 'Concurrent update');
+    gas.properties.set('REPOSITORY_PENDING', 'pending');
+    assert.throws(() => repo.read('SOURCES'), { code: 'REPOSITORY_BLOCKED' });
+    gas.properties.delete('REPOSITORY_PENDING');
+  });
+  gas.calls.length = 0;
+  repo.withRequest(() => repo.read('SOURCES'));
+  assert.equal(gas.calls.filter(call => call.op === 'read' && call.startRow === 2).length, 1);
+});
+
 test('GAS setup is idempotent and existing conflicting sheets are preserved', () => {
   const gas = gasRuntime();
   gas.context.setupTthcMonitor_(); gas.context.setupTthcMonitor_();

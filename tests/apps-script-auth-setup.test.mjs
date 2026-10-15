@@ -112,6 +112,9 @@ test('GAS Editor verification denies nonowners and missing, disabled or downgrad
 test('GAS verification detects mismatched encrypted username, broken credentials, key and scope without replacing data', () => {
   for (const scenario of ['differentUsername', 'tamper', 'credentials', 'wrongKey', 'invalidScope', 'offline']) {
     const gas = provision();
+    // Keep explicit legacy fixtures to verify encrypted backups remain readable.
+    const identity = gas.app.Crypto.decrypt(gas.app.Repo.read('USERS')[0].username_encrypted);
+    mutateAdmin(gas, { username_encrypted: gas.app.Crypto.encrypt(identity) });
     if (scenario === 'differentUsername') mutateAdmin(gas, { username_encrypted: gas.app.Crypto.encrypt('another.admin') });
     if (scenario === 'tamper') {
       const encrypted = JSON.parse(gas.app.Repo.read('USERS')[0].username_encrypted);

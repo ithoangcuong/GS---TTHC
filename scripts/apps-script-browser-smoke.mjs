@@ -16,6 +16,7 @@ for (const name of ['Auth', 'Cases', 'Dashboard', 'Reports', 'Alerts', 'Router',
 const first = ['Utils', 'Crypto', 'Passwords', 'SheetRepository', 'Settings', 'Permissions', 'Users', 'Sources', 'Audit', 'Deadline'];
 const modules = [...first, ...names.filter(name => !first.includes(name) && name !== 'Setup'), 'Setup'];
 const gas = gasRuntime(modules, { GOOGLE_CLIENT_ID: 'SYNTHETIC_BROWSER_CLIENT', GOOGLE_CLIENT_SECRET: 'SYNTHETIC_BROWSER_SECRET', WEB_APP_URL: 'https://script.google.com/macros/s/SYNTHETIC_BROWSER_DEPLOYMENT/exec' });
+gas.properties.set('RECOVERY_EMAIL_ENABLED','true');
 const evaluate = source => runInContext(source, gas.context);
 const call = (action, payload = {}, token = '') => gas.plain(evaluate(`rpc(${JSON.stringify(action)},${JSON.stringify(payload)},${JSON.stringify(token)})`));
 evaluate('setupTthcMonitor_()');
@@ -61,7 +62,7 @@ let html = readFileSync('apps-script/Index.html', 'utf8')
   .replace(/<\?!=\s*TTHC\.View\.include\('Styles'\);\s*\?>/, readFileSync('apps-script/Styles.html', 'utf8'))
   .replace(/<\?!=\s*TTHC\.View\.include\('Scripts'\);\s*\?>/, readFileSync('apps-script/Scripts.html', 'utf8'));
 assert.ok(!html.includes('<?'), 'All GAS template includes must be expanded');
-const bridge = '<script>window.google={script:{run:{withSuccessHandler(success){const api={withFailureHandler(failure){api.failure=failure;return api;},rpc(action,payload,token){fetch("/__rpc",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action,payload,token})}).then(response=>response.json()).then(success).catch(error=>api.failure&&api.failure(error));}};return api;}}}};</script>';
+const bridge = '<script>window.google={script:{url:{getLocation(callback){callback({parameter:Object.fromEntries(new URLSearchParams(location.search))});}},run:{withSuccessHandler(success){const api={withFailureHandler(failure){api.failure=failure;return api;},rpc(action,payload,token){fetch("/__rpc",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action,payload,token})}).then(response=>response.json()).then(success).catch(error=>api.failure&&api.failure(error));}};return api;}}}};</script>';
 const ribbon = '<div style="position:fixed;bottom:0;left:0;right:0;z-index:200;background:#572d70;color:white;text-align:center;font:11px Arial;padding:4px;pointer-events:none">SYNTHETIC LOCAL HARNESS ? No live accounts / portal / Sheets data</div>';
 async function requestBody(request) { let text = ''; for await (const chunk of request) { text += chunk; if (text.length > 1024 * 1024) throw new Error('Test request too large'); } return text ? JSON.parse(text) : {}; }
 const server = createServer(async (request, response) => {
@@ -125,14 +126,14 @@ try {
     assert.equal(await page.locator('#google-login, input[type=email]').count(), 0);
     assert.equal(await page.locator('#login-form [name=password]').getAttribute('type'), 'password');
     assert.equal(await page.locator('#login-form [name=password]').getAttribute('autocomplete'), 'current-password');
-    await control({ missingConfig: true }); await page.locator('#retry-session').click(); await page.locator('#account-login').waitFor();
+    await control({ missingConfig: true }); await page.reload(); await page.locator('#account-login').waitFor();
     assert.equal(await page.locator('#account-login').isDisabled(), true);
     await page.locator('.login-setup summary').click();
     assert.match(await page.locator('.login-setup').innerText(), /SPREADSHEET_ID/);
     const attempts = requests.filter(request => request.action === 'auth.login').length;
     await page.locator('#login-form').dispatchEvent('submit');
     assert.equal(requests.filter(request => request.action === 'auth.login').length, attempts);
-    await control({ missingConfig: false }); await page.locator('#retry-session').click(); await page.locator('#account-login').waitFor();
+    await control({ missingConfig: false }); await page.reload(); await page.locator('#account-login').waitFor();
     assert.equal(await page.locator('#account-login').isEnabled(), true);
     await fillLogin('admin', 'SYNTHETIC-wrong-password'); await page.waitForFunction(() => document.querySelector('#login-error')?.textContent.length);
     assert.equal(await page.locator('#login-form [name=password]').inputValue(), '');
@@ -199,9 +200,22 @@ try {
     console.log('Account browser PASS: username/password login, setup retry, generic denial, first-use change with no business access, confirmation guard, session rotation/restoration, ordinary change cancel, administrator issuance/default/reset, viewer restrictions and logout. Local GAS + bundled crypto fixtures only.');
   } else if (process.argv.includes('--targeted')) {
     await page.goto(origin); await page.locator('#account-login').waitFor(); await login('admin');
+    const submittedDay = new Date(Date.parse(iso(-120)) + 7 * 3600000).toISOString().slice(0,10);
+    await page.locator('[name=submittedFrom]').fill('1990-01-01');
+    await page.locator('[name=submittedTo]').fill('1990-01-01');
+    await page.locator('#filter-form [type=submit]').click(); await ready();
+    assert.equal(await page.locator('.metric').first().locator('.metric-value').innerText(), '0');
+    await page.locator('[name=submittedFrom]').fill(submittedDay);
+    await page.locator('[name=submittedTo]').fill(submittedDay);
+    await page.locator('#filter-form [type=submit]').click(); await ready();
+    assert.notEqual(await page.locator('.metric').first().locator('.metric-value').innerText(), '0');
+    await page.reload(); await ready();
+    assert.equal(await page.locator('[name=submittedFrom]').inputValue(), submittedDay);
+    assert.equal(await page.locator('[name=submittedTo]').inputValue(), submittedDay);
     assert.match(await page.locator('#page-content').innerText(),/\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}:\d{2}/,'Observed and deadline dates must use DD/MM/YYYY HH:mm:ss');
     const officer=page.locator('.bar-row[href*="officerKey="]').first();const officerKey=new URLSearchParams((await officer.getAttribute('href')).split('?')[1]).get('officerKey');assert.match(officerKey,/^[A-Za-z0-9_-]+$/);
     await officer.click();await ready();assert.ok(page.url().includes('officerKey='));assert.match(await page.locator('#page-content .notice').innerText(),/nhóm cán bộ/);
+    assert.ok(page.url().includes('submittedFrom='+submittedDay) && page.url().includes('submittedTo='+submittedDay));
     const token=await page.evaluate(()=>sessionStorage.getItem('tthc.dashboard.session'));
     const selected=call('cases.list',{officerKey,page:1,pageSize:25},token);assert.equal(selected.ok,true);assert.equal(await page.locator('tbody tr').count(),selected.data.items.length);
     await page.locator('[name=sourceSystem]').selectOption('TPHCM');await page.locator('#filter-form [type=submit]').click();await ready();assert.ok(page.url().includes('officerKey=')&&page.url().includes('sourceSystem=TPHCM'));
@@ -211,6 +225,64 @@ try {
     assert.deepEqual(exceptions, []); console.log('Targeted browser PASS: GAS indexed chart/report drilldowns, native date formatting and responsive dashboard.');
   } else {
     await loginRegression(); await issuanceRegression();
+  await page.locator('#account-recovery').click();
+  await page.locator('#recovery-form [name=email]').fill('recovery@example.test');
+  await page.locator('#recovery-form [name=currentPassword]').fill(passwords.admin);
+  await page.locator('#recovery-form [type=submit]').click();
+  await page.waitForFunction(()=>document.querySelector('#recovery-message')?.textContent.includes('Đã gửi'));
+  const emailedToken=()=>gas.mail.at(-1).body.match(/token=(tthc\.r\.[a-f0-9]{64})/)[1];
+  await page.goto(origin+'?recovery=verify&token='+emailedToken());
+  await page.locator('#recovery-form [type=submit]').click();
+  await page.waitForFunction(()=>document.querySelector('#recovery-message')?.textContent.includes('đã được xác minh'));
+  await page.locator('#recovery-back').click();await ready();await logout();
+  assert.equal(await page.locator('#retry-session').count(),0);
+  await page.locator('#forgot-password').click();
+  await page.locator('#recovery-form [name=username]').fill('admin');
+  await page.locator('#recovery-form [type=submit]').click();
+  await page.waitForFunction(()=>document.querySelector('#recovery-message')?.textContent.includes('Nếu tài khoản'));
+  await page.goto(origin+'?recovery=reset&token='+emailedToken());
+  const recovered='SYNTHETIC-browser-email-recovered-2026!';
+  await page.locator('#recovery-form [name=newPassword]').fill(recovered);
+  await page.locator('#recovery-form [name=confirmPassword]').fill('SYNTHETIC-does-not-match');
+  await page.locator('#recovery-form [type=submit]').click();
+  assert.match(await page.locator('#recovery-message').innerText(),/chưa khớp/);
+  await page.locator('#recovery-form [name=confirmPassword]').fill(recovered);
+  await page.locator('#recovery-form [type=submit]').click();
+  await page.waitForFunction(()=>document.querySelector('#recovery-message')?.textContent.includes('Đã đặt lại'));
+  passwords.admin=recovered;
+  await page.locator('#recovery-back').click();await page.locator('#account-login').waitFor();await login('admin');
+  console.log('PASS: verified recovery email, forgot-password link, password reset and login with new password');
+  // HTML Service runs inside an iframe; a top-level preview hides base target bugs.
+  const embeddedPage = await context.newPage();
+  const sessionToken = await page.evaluate(() => sessionStorage.getItem('tthc.dashboard.session'));
+  await embeddedPage.goto(origin);
+  await embeddedPage.evaluate(token => sessionStorage.setItem('tthc.dashboard.session', token), sessionToken);
+  await embeddedPage.setContent('<iframe name="app-frame" src="' + origin + '" width="1440" height="1080"></iframe>');
+  const embedded = embeddedPage.frame({ name: 'app-frame' });
+  const outerUrl = embeddedPage.url();
+  async function embeddedReady(hash) {
+    await embedded.waitForFunction(expected => {
+      const content = document.querySelector('#page-content');
+      return location.hash === expected && content?.getAttribute('aria-busy') === 'false' && content.dataset.routeKey === expected;
+    }, hash);
+    assert.equal(await embedded.locator('.error-request').count(), 0);
+    await embedded.locator('#page-content h1').waitFor();
+    assert.equal(embeddedPage.url(), outerUrl, 'Internal links must not navigate the outer Apps Script page');
+  }
+  await embedded.locator('.sidebar').waitFor();
+  for (const name of ['cases', 'alerts', 'reports', 'statistics', 'sources', 'officers', 'users', 'audit', 'settings', 'sync', 'dashboard']) {
+    await embedded.locator('.sidebar a.nav-link[href="#' + name + '"]').click();
+    await embeddedReady('#' + name);
+  }
+  await embedded.locator('.metric.overdue').click();
+  const drilldownHash = await embedded.evaluate(() => location.hash);
+  await embeddedReady(drilldownHash);
+  assert.match(drilldownHash, /alertLevel=OVERDUE/);
+  await embedded.locator('tbody a.text-link').first().click();
+  await embedded.waitForFunction(() => location.hash.includes('id='));
+  await embeddedReady(await embedded.evaluate(() => location.hash));
+  await embeddedPage.close();
+  console.log('PASS: iframe sidebar navigation, dashboard drilldown and case detail preserve the outer page');
   assert.equal(await page.locator('.metric').count(), 8, 'Dashboard must expose all operational KPI cards');
   assert.match(await page.locator('#page-content').innerText(), /Quan sát.*24 giờ/);
   await page.locator('[name=sourceSystem]').selectOption('TPHCM'); await page.locator('#filter-form [type=submit]').click(); await ready();

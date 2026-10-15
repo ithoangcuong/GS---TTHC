@@ -50,7 +50,11 @@ TTHC.Sources = (function () {
     var page = TTHC.Cases.pageOptions(query || {});
     var rows = TTHC.Repo.read('SYNC_LOGS').filter(function (row) { return (!query.sourceSystem || row.source_id === query.sourceSystem) && (!query.q || [row.source_id, row.status, row.batch_id].join(' ').toLowerCase().indexOf(String(query.q).toLowerCase()) >= 0) && TTHC.Permissions.sourceAllowed(user, row.source_id) && (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' || user.role === 'LEADER' || row.actor_id === user.id); });
     rows.sort(function (a, b) { return String(b.created_at).localeCompare(String(a.created_at)); });
-    return { items: rows.slice(page.offset, page.offset + page.pageSize).map(function (row) { return { id: row.sync_id, batchId: row.batch_id, sourceSystem: row.source_id, status: row.status, accepted: Number(row.accepted), rejected: Number(row.rejected), observedAt: row.observed_at, createdAt: row.created_at, errorCode: row.error_code || null }; }), total: rows.length, page: page.page, pageSize: page.pageSize };
+    var selected = rows.slice(page.offset, page.offset + page.pageSize), contexts = {}, ids = selected.map(function (row) { return row.sync_id; });
+    var audits = ids.length ? TTHC.Repo.read('AUDIT_LOGS').filter(function (row) { return row.action === 'SYNC_SOURCE' && ids.indexOf(row.target_id) >= 0; }) : [];
+    var details = audits.length ? TTHC.Crypto.decryptMany(audits.map(function (row) { return row.details_encrypted; })) : [];
+    audits.forEach(function (row, i) { contexts[row.target_id] = details[i].collectionContext || null; });
+    return { items: selected.map(function (row) { return { id: row.sync_id, batchId: row.batch_id, sourceSystem: row.source_id, status: row.status, accepted: Number(row.accepted), rejected: Number(row.rejected), observedAt: row.observed_at, createdAt: row.created_at, errorCode: row.error_code || null, collectionContext: contexts[row.sync_id] || null }; }), total: rows.length, page: page.page, pageSize: page.pageSize };
   }
   return { definitions: definitions, all: all, find: find, validateHost: validateHost, list: list, update: update, syncList: syncList };
 })();
